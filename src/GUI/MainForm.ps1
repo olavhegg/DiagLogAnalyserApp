@@ -137,12 +137,33 @@ function Setup-AnalysisTab {
     $btnSource.Size = New-Object System.Drawing.Size(80, 20)
     $btnSource.Text = "Browse..."
     $btnSource.Add_Click({
-        $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-        $folderBrowser.Description = "Select DiagLogs folder"
-        if ($folderBrowser.ShowDialog() -eq 'OK') {
-            # Use $this to find the control in the parent panel
-            $txtBox = $this.Parent.Controls["SourcePath"]
-            $txtBox.Text = $folderBrowser.SelectedPath
+        try {
+            # Use direct control reference from the parent panel
+            $txtSourcePathControl = $this.Parent.Controls["SourcePath"]
+            
+            if ($null -eq $txtSourcePathControl) {
+                Write-Host "Could not find SourcePath control" -ForegroundColor Red
+                return
+            }
+            
+            # Use folder browser directly since we know it works
+            $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+            $folderBrowser.Description = "Select DiagLogs folder"
+            
+            if ($folderBrowser.ShowDialog() -eq 'OK') {
+                $selectedPath = $folderBrowser.SelectedPath
+                Write-Host "Selected path: $selectedPath" -ForegroundColor Cyan
+                
+                # Update the text box value
+                $txtSourcePathControl.Text = $selectedPath
+                
+                # Verify it was set
+                Write-Host "TextBox value after update: '$($txtSourcePathControl.Text)'" -ForegroundColor Cyan
+            } else {
+                Write-Host "Folder selection canceled" -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Host "Error in folder selection: $_" -ForegroundColor Red
         }
     })
     $panel.Controls.Add($btnSource)
@@ -165,10 +186,40 @@ function Setup-AnalysisTab {
     $btnOutput.Size = New-Object System.Drawing.Size(80, 20)
     $btnOutput.Text = "Browse..."
     $btnOutput.Add_Click({
-        $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-        $folderBrowser.Description = "Select output folder"
-        if ($folderBrowser.ShowDialog() -eq 'OK') {
-            $txtOutput.Text = $folderBrowser.SelectedPath
+        try {
+            # Use direct control reference from the parent panel
+            $txtOutputPathControl = $panel.Controls["OutputPath"]
+            
+            if ($null -eq $txtOutputPathControl) {
+                Write-Host "Could not find OutputPath control" -ForegroundColor Red
+                return
+            }
+            
+            # Use folder browser directly
+            $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+            $folderBrowser.Description = "Select output folder"
+            $folderBrowser.ShowNewFolderButton = $true
+            
+            # Set initial directory if current value exists
+            if (-not [string]::IsNullOrWhiteSpace($txtOutputPathControl.Text) -and 
+                (Test-Path -Path $txtOutputPathControl.Text -ErrorAction SilentlyContinue)) {
+                $folderBrowser.SelectedPath = $txtOutputPathControl.Text
+            }
+            
+            if ($folderBrowser.ShowDialog() -eq 'OK') {
+                $selectedPath = $folderBrowser.SelectedPath
+                Write-Host "Selected output path: $selectedPath" -ForegroundColor Cyan
+                
+                # Update the text box value
+                $txtOutputPathControl.Text = $selectedPath
+                
+                # Verify it was set
+                Write-Host "Output TextBox value after update: '$($txtOutputPathControl.Text)'" -ForegroundColor Cyan
+            } else {
+                Write-Host "Output folder selection canceled" -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Host "Error in output folder selection: $_" -ForegroundColor Red
         }
     })
     $panel.Controls.Add($btnOutput)
@@ -207,121 +258,272 @@ function Setup-AnalysisTab {
     $btnAnalyze.Size = New-Object System.Drawing.Size(120, 30)
     $btnAnalyze.Text = "Analyze Structure"
     $btnAnalyze.Add_Click({
-        # Validate inputs
-        if (-not (Test-Path $txtSource.Text)) {
-            [System.Windows.MessageBox]::Show("Please select a valid DiagLogs folder!", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-            return
-        }
-        
-        if (-not (Test-Path $txtOutput.Text)) {
-            try {
-                New-Item -Path $txtOutput.Text -ItemType Directory -Force | Out-Null
-            }
-            catch {
-                [System.Windows.MessageBox]::Show("Unable to create output folder: $_", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+        try {
+            # Get the source path control directly
+            $txtSourcePathControl = $panel.Controls["SourcePath"]
+            
+            if ($null -eq $txtSourcePathControl) {
+                [System.Windows.MessageBox]::Show("Internal error: Could not find source path control", "Error", 
+                    [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
                 return
             }
-        }
-        
-        # Update status
-        $statusLabel = $script:MainForm.Controls["StatusStrip"].Items["StatusLabel"]
-        $statusLabel.Text = "Analyzing folder structure..."
-        $rtbResults.Clear()
-        $rtbResults.AppendText("Starting analysis of $($txtSource.Text)...$([Environment]::NewLine)")
-        
-        # Disable buttons during analysis
-        $btnAnalyze.Enabled = $false
-        $btnReport.Enabled = $false
-        
-        # Update settings
-        Set-AppSetting -Name "ExtractCabsAutomatically" -Value $chkExtractCabs.Checked
-        Set-AppSetting -Name "SkipExistingCabExtracts" -Value $chkSkipExisting.Checked
-        
-        # Run analysis in background
-        $analysisParams = @{
-            FolderPath = $txtSource.Text
-            IncludeSubFolders = $chkSubfolders.Checked
-        }
-        
-        # Start background job
-        Start-ThreadJob -ScriptBlock {
-            param($params)
-            . (Join-Path -Path $using:PSScriptRoot -ChildPath "..\Core\Analyzer.ps1")
-            . (Join-Path -Path $using:PSScriptRoot -ChildPath "..\Utils\Logging.ps1")
-            Start-FolderAnalysis @params
-        } -ArgumentList $analysisParams -StreamingHost $Host | Out-Null
-        
-        # Timer to check job progress
-        $timer = New-Object System.Windows.Forms.Timer
-        $timer.Interval = 1000
-        $timer.Add_Tick({
-            $job = Get-Job -State Running | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
             
-            if ($null -eq $job) {
-                # Job completed, get results
-                $job = Get-Job -State Completed | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
-                
-                if ($null -ne $job) {
-                    $script:AnalysisResults = Receive-Job -Job $job
-                    $job | Remove-Job
-                    
-                    # Update UI with results
-                    $rtbResults.AppendText("Analysis completed.$([Environment]::NewLine)$([Environment]::NewLine)")
-                    $rtbResults.AppendText((Get-AnalysisSummary -AnalysisResults $script:AnalysisResults))
-                    
-                    # Enable search and extract tabs
-                    $tabControl = $script:MainForm.Controls["MainTabControl"]
-                    $tabControl.TabPages["SearchTab"].Enabled = $true
-                    $tabControl.TabPages["ExtractTab"].Enabled = ($script:AnalysisResults.CabFiles.Count -gt 0)
-                    
-                    # Update extract tab with CAB files
-                    if ($script:AnalysisResults.CabFiles.Count -gt 0) {
-                        $lstCabFiles = $tabControl.TabPages["ExtractTab"].Controls["CabFilesList"]
-                        $lstCabFiles.Items.Clear()
-                        
-                        foreach ($cab in $script:AnalysisResults.CabFiles) {
-                            $lstCabFiles.Items.Add($cab.RelativePath)
-                        }
-                        
-                        # Auto-extract if enabled
-                        if ($chkExtractCabs.Checked) {
-                            # Switch to extract tab
-                            $tabControl.SelectedTab = $tabControl.TabPages["ExtractTab"]
-                            
-                            # Click the extract button
-                            $btnExtractAll = $tabControl.TabPages["ExtractTab"].Controls["ExtractAllButton"]
-                            $btnExtractAll.PerformClick()
-                        }
-                    }
-                    
-                    # Update search tab with file types
-                    $clbFileTypes = $tabControl.TabPages["SearchTab"].Controls["FileTypesList"]
-                    $clbFileTypes.Items.Clear()
-                    
-                    foreach ($ext in $script:AnalysisResults.Extensions.Keys) {
-                        $clbFileTypes.Items.Add($ext, $true)
-                    }
-                    
-                    # Enable buttons
-                    $btnAnalyze.Enabled = $true
-                    $btnReport.Enabled = $true
-                    
-                    # Update status
-                    $statusLabel.Text = "Analysis complete. Found $($script:AnalysisResults.Files) files, $($script:AnalysisResults.Directories) directories."
-                }
-                else {
-                    # No completed job found
-                    $rtbResults.AppendText("Analysis failed.$([Environment]::NewLine)")
-                    $btnAnalyze.Enabled = $true
-                    $btnReport.Enabled = $true
-                    $statusLabel.Text = "Analysis failed."
-                }
-                
-                $timer.Stop()
-                $timer.Dispose()
+            $sourcePath = $txtSourcePathControl.Text
+            Write-Host "Source path from control: '$sourcePath'" -ForegroundColor Cyan
+            
+            # Validate inputs
+            if ([string]::IsNullOrWhiteSpace($sourcePath)) {
+                [System.Windows.MessageBox]::Show("Please select a DiagLogs folder!", "Error", 
+                    [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+                return
             }
-        })
-        $timer.Start()
+            
+            # Check if folder exists
+            if (-not (Test-Path -Path $sourcePath -PathType Container -ErrorAction SilentlyContinue)) {
+                [System.Windows.MessageBox]::Show("The specified DiagLogs folder does not exist or cannot be accessed.", 
+                    "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+                return
+            }
+            
+            # Get output path
+            $txtOutputPathControl = $panel.Controls["OutputPath"]
+            $outputPath = if ($null -ne $txtOutputPathControl) { $txtOutputPathControl.Text } else { "" }
+            
+            # Ensure output directory exists
+            if ([string]::IsNullOrWhiteSpace($outputPath)) {
+                $outputPath = Get-AppSetting -Name "DefaultOutputPath"
+            }
+            
+            try {
+                if (-not (Test-Path -Path $outputPath -ErrorAction SilentlyContinue)) {
+                    New-Item -Path $outputPath -ItemType Directory -Force -ErrorAction Stop | Out-Null
+                }
+            }
+            catch {
+                [System.Windows.MessageBox]::Show("Unable to create output folder: $_", "Error", 
+                    [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+                return
+            }
+            
+            # Update status
+            $statusLabel = $script:MainForm.Controls["StatusStrip"].Items["StatusLabel"]
+            if ($null -ne $statusLabel) {
+                $statusLabel.Text = "Analyzing folder structure..."
+            }
+            
+            # Clear and update results text box
+            $rtbResults = $panel.Controls["ResultsTextBox"]
+            if ($null -ne $rtbResults) {
+                $rtbResults.Clear()
+                $rtbResults.AppendText("Starting analysis of $sourcePath...$([Environment]::NewLine)")
+            }
+            
+            # Disable buttons during analysis
+            $btnAnalyze.Enabled = $false
+            if ($null -ne $btnReport) {
+                $btnReport.Enabled = $false
+            }
+            
+            # Update settings safely
+            if ($null -ne $chkExtractCabs) {
+                Set-AppSetting -Name "ExtractCabsAutomatically" -Value $chkExtractCabs.Checked
+            }
+            
+            if ($null -ne $chkSkipExisting) {
+                Set-AppSetting -Name "SkipExistingCabExtracts" -Value $chkSkipExisting.Checked
+            }
+            
+            # Run analysis in background with safety checks
+            $analysisParams = @{
+                FolderPath = $sourcePath  # Use validated path
+                IncludeSubFolders = if ($null -ne $chkSubfolders) { $chkSubfolders.Checked } else { $true }
+            }
+            
+            # Ensure modules exist
+            $analyzerPath = Join-Path -Path $PSScriptRoot -ChildPath "..\Core\Analyzer.ps1"
+            $loggingPath = Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Logging.ps1"
+            
+            if (-not (Test-Path -Path $analyzerPath -ErrorAction SilentlyContinue)) {
+                throw "Analyzer module not found at: $analyzerPath"
+            }
+            
+            if (-not (Test-Path -Path $loggingPath -ErrorAction SilentlyContinue)) {
+                throw "Logging module not found at: $loggingPath"
+            }
+            
+            # Start the job with validated paths
+            Start-ThreadJob -ScriptBlock {
+                param($params, $analyzerPath, $loggingPath)
+                . $analyzerPath
+                . $loggingPath
+                Start-FolderAnalysis @params
+            } -ArgumentList $analysisParams, $analyzerPath, $loggingPath -StreamingHost $Host | Out-Null
+            
+            # Timer to check job progress
+            $timer = New-Object System.Windows.Forms.Timer
+            $timer.Interval = 1000
+            $timer.Add_Tick({
+                # Check for running jobs
+                $job = Get-Job -State Running | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
+                
+                if ($null -eq $job) {
+                    # Job completed or not found, check for completed job
+                    $job = Get-Job -State Completed | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
+                    
+                    if ($null -ne $job) {
+                        try {
+                            # Try to get the results
+                            $script:AnalysisResults = Receive-Job -Job $job -ErrorAction Stop
+                            $job | Remove-Job -ErrorAction SilentlyContinue
+                            
+                            # Update UI with results if we have them
+                            if ($null -ne $script:AnalysisResults) {
+                                # Update results textbox
+                                if ($null -ne $rtbResults) {
+                                    $rtbResults.AppendText("Analysis completed.$([Environment]::NewLine)$([Environment]::NewLine)")
+                                    
+                                    # Safe call to Get-AnalysisSummary
+                                    try {
+                                        $summary = Get-AnalysisSummary -AnalysisResults $script:AnalysisResults
+                                        $rtbResults.AppendText($summary)
+                                    }
+                                    catch {
+                                        $rtbResults.AppendText("Error generating summary: $_$([Environment]::NewLine)")
+                                    }
+                                }
+                                
+                                # Enable tabs and update with results
+                                $tabControl = $script:MainForm.Controls["MainTabControl"]
+                                if ($null -ne $tabControl) {
+                                    # Enable search tab
+                                    if ($null -ne $tabControl.TabPages["SearchTab"]) {
+                                        $tabControl.TabPages["SearchTab"].Enabled = $true
+                                    }
+                                    
+                                    # Handle extract tab if we have CAB files
+                                    $cabCount = if ($null -ne $script:AnalysisResults.CabFiles) { $script:AnalysisResults.CabFiles.Count } else { 0 }
+                                    
+                                    if ($null -ne $tabControl.TabPages["ExtractTab"]) {
+                                        $tabControl.TabPages["ExtractTab"].Enabled = ($cabCount -gt 0)
+                                    
+                                        # Update extract tab with CAB files if we have them
+                                        if ($cabCount -gt 0) {
+                                            $lstCabFiles = $tabControl.TabPages["ExtractTab"].Controls["CabFilesList"]
+                                            if ($null -ne $lstCabFiles) {
+                                                $lstCabFiles.Items.Clear()
+                                                
+                                                foreach ($cab in $script:AnalysisResults.CabFiles) {
+                                                    if ($null -ne $cab -and $null -ne $cab.RelativePath) {
+                                                        $lstCabFiles.Items.Add($cab.RelativePath)
+                                                    }
+                                                }
+                                                
+                                                # Auto-extract if enabled
+                                                if ($null -ne $chkExtractCabs -and $chkExtractCabs.Checked) {
+                                                    # Switch to extract tab
+                                                    $tabControl.SelectedTab = $tabControl.TabPages["ExtractTab"]
+                                                    
+                                                    # Click the extract button if it exists
+                                                    $btnExtractAll = $tabControl.TabPages["ExtractTab"].Controls["ExtractAllButton"]
+                                                    if ($null -ne $btnExtractAll) {
+                                                        $btnExtractAll.PerformClick()
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    # Update search tab with file types
+                                    if ($null -ne $tabControl.TabPages["SearchTab"]) {
+                                        $clbFileTypes = $tabControl.TabPages["SearchTab"].Controls["FileTypesList"]
+                                        if ($null -ne $clbFileTypes -and $null -ne $script:AnalysisResults.Extensions) {
+                                            $clbFileTypes.Items.Clear()
+                                            
+                                            foreach ($ext in $script:AnalysisResults.Extensions.Keys) {
+                                                if ($null -ne $ext) {
+                                                    $clbFileTypes.Items.Add($ext, $true)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                # Update status with file counts
+                                $fileCount = if ($null -ne $script:AnalysisResults.Files) { $script:AnalysisResults.Files } else { 0 }
+                                $dirCount = if ($null -ne $script:AnalysisResults.Directories) { $script:AnalysisResults.Directories } else { 0 }
+                                
+                                if ($null -ne $statusLabel) {
+                                    $statusLabel.Text = "Analysis complete. Found $fileCount files, $dirCount directories."
+                                }
+                            }
+                            else {
+                                # Handle null analysis results
+                                if ($null -ne $rtbResults) {
+                                    $rtbResults.AppendText("Analysis completed but returned no results.$([Environment]::NewLine)")
+                                }
+                                
+                                if ($null -ne $statusLabel) {
+                                    $statusLabel.Text = "Analysis completed with no results."
+                                }
+                            }
+                        }
+                        catch {
+                            # Handle errors during result processing
+                            if ($null -ne $rtbResults) {
+                                $rtbResults.AppendText("Error processing analysis results: $_$([Environment]::NewLine)")
+                            }
+                            
+                            if ($null -ne $statusLabel) {
+                                $statusLabel.Text = "Error processing analysis results."
+                            }
+                        }
+                    }
+                    else {
+                        # No completed job found - either it failed or was removed
+                        if ($null -ne $rtbResults) {
+                            $rtbResults.AppendText("Analysis did not complete successfully.$([Environment]::NewLine)")
+                        }
+                        
+                        if ($null -ne $statusLabel) {
+                            $statusLabel.Text = "Analysis failed."
+                        }
+                    }
+                    
+                    # Re-enable buttons regardless of outcome
+                    $btnAnalyze.Enabled = $true
+                    if ($null -ne $btnReport) {
+                        $btnReport.Enabled = $true
+                    }
+                    
+                    # Stop and dispose the timer
+                    $timer.Stop()
+                    $timer.Dispose()
+                }
+            })
+            $timer.Start()
+        }
+        catch {
+            # Handle startup errors
+            Write-Host "Error in analyzer: $_" -ForegroundColor Red
+            
+            if ($null -ne $rtbResults) {
+                $rtbResults.AppendText("Failed to start analysis: $_$([Environment]::NewLine)")
+            }
+            
+            if ($null -ne $statusLabel) {
+                $statusLabel.Text = "Failed to start analysis."
+            }
+            
+            # Re-enable buttons
+            $btnAnalyze.Enabled = $true
+            if ($null -ne $btnReport) {
+                $btnReport.Enabled = $true
+            }
+            
+            # Show error message
+            [System.Windows.MessageBox]::Show("Failed to start analysis: $_", "Error", 
+                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+        }
     })
     $panel.Controls.Add($btnAnalyze)
     

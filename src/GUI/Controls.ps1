@@ -97,6 +97,43 @@ function Show-FilePicker {
     return $null
 }
 
+# Function to show a folder picker dialog
+function Show-FolderPicker {
+    param(
+        [string]$Description = "Select Folder",
+        [string]$InitialDirectory = $null,
+        [switch]$ShowNewFolderButton = $true
+    )
+    
+    try {
+        # Create the folder browser dialog
+        $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+        $folderBrowser.Description = $Description
+        $folderBrowser.ShowNewFolderButton = $ShowNewFolderButton
+        
+        # Set initial directory with better null handling
+        if (-not [string]::IsNullOrEmpty($InitialDirectory) -and 
+            (Test-Path -Path $InitialDirectory -ErrorAction SilentlyContinue)) {
+            $folderBrowser.SelectedPath = $InitialDirectory
+        }
+        
+        # Show dialog and handle result
+        if ($folderBrowser.ShowDialog() -eq 'OK') {
+            # Double-check that we have a valid path
+            if (-not [string]::IsNullOrEmpty($folderBrowser.SelectedPath) -and 
+                (Test-Path -Path $folderBrowser.SelectedPath -ErrorAction SilentlyContinue)) {
+                return $folderBrowser.SelectedPath
+            }
+        }
+        
+        return $null
+    }
+    catch {
+        Write-Warning "Error in folder picker: $_"
+        return $null
+    }
+}
+
 # Extension method to create a simple context menu for text boxes
 function Add-TextBoxContextMenu {
     param(
