@@ -1,0 +1,8 @@
+# DiagLog Analyzer Log File
+# Started: 2025-03-04 18:55:49
+# Log Level: INFO
+# ----------------------------------------
+[2025-03-04 18:55:49.932] [INFO] [General] Logging initialized
+[2025-03-04 18:55:49.933] [INFO] [General] Application started
+[2025-03-04 18:55:49.979] [ERROR] [General] Error starting application: Exception calling "ExtractAssociatedIcon" with "1" argument(s): "Could not load file or assembly 'C:\Program Files\PowerShell\7\powershell.exe'. The system cannot find the file specified."
+[2025-03-04 18:55:49.984] [INFO] [General] Application closed
