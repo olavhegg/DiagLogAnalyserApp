@@ -14,6 +14,9 @@ function Initialize-Settings {
             # Load settings from JSON file
             $Global:AppSettings = Get-Content -Path $script:SettingsPath -Raw | ConvertFrom-Json
             Write-Verbose "Settings loaded from $script:SettingsPath"
+            
+            # Validate settings and apply defaults where needed
+            Validate-Settings
         }
         catch {
             Write-Warning "Failed to load settings: $_"
@@ -34,6 +37,83 @@ function Initialize-Settings {
     foreach ($path in $paths) {
         if (-not [string]::IsNullOrEmpty($path) -and -not (Test-Path -Path $path)) {
             New-Item -Path $path -ItemType Directory -Force | Out-Null
+        }
+    }
+}
+
+function Validate-Settings {
+    # This function ensures all required settings have valid values
+    # Check for missing properties and add them with default values
+    
+    # Define default settings map
+    $defaultSettings = @{
+        "AppName" = "DiagLog Analyzer"
+        "Version" = "1.0.0"
+        "DefaultOutputPath" = Join-Path -Path $PSScriptRoot -ChildPath "..\..\results"
+        "LogPath" = Join-Path -Path $PSScriptRoot -ChildPath "..\..\logs"
+        "MaxFileSizeForTextSearch" = 50MB
+        "DefaultFileTypesToSearch" = @(".log", ".txt", ".xml", ".html", ".json", ".csv")
+        "ExtractCabsAutomatically" = $false
+        "SkipExistingCabExtracts" = $true
+        "MainFormWidth" = 900
+        "MainFormHeight" = 700
+        "ResultsFontFamily" = "Consolas"
+        "ResultsFontSize" = 9
+        "LogLevelName" = "INFO"
+    }
+    
+    # Validate and repair each setting
+    foreach ($key in $defaultSettings.Keys) {
+        # Check if property exists
+        if (-not $Global:AppSettings.PSObject.Properties.Name -contains $key) {
+            # Property doesn't exist, add it with default value
+            $Global:AppSettings | Add-Member -NotePropertyName $key -NotePropertyValue $defaultSettings[$key]
+            Write-Verbose "Added missing setting '$key' with default value: $($defaultSettings[$key])"
+        }
+        else {
+            # Property exists, check if value is valid
+            $currentValue = $Global:AppSettings.$key
+            
+            # Handle numerical values validation
+            if ($key -in @("MainFormWidth", "MainFormHeight", "ResultsFontSize", "MaxFileSizeForTextSearch")) {
+                # Ensure numerical values are valid (greater than 0)
+                if ($null -eq $currentValue -or 
+                    (-not [string]::IsNullOrEmpty($currentValue) -and -not [double]::TryParse($currentValue.ToString(), [ref]$null)) -or 
+                    $currentValue -le 0) {
+                    
+                    # Replace invalid value with default
+                    $Global:AppSettings.$key = $defaultSettings[$key]
+                    Write-Verbose "Replaced invalid value for '$key' with default: $($defaultSettings[$key])"
+                }
+            }
+            # Handle array values validation
+            elseif ($key -eq "DefaultFileTypesToSearch") {
+                if ($null -eq $currentValue -or -not ($currentValue -is [array])) {
+                    $Global:AppSettings.$key = $defaultSettings[$key]
+                    Write-Verbose "Replaced invalid value for '$key' with default array"
+                }
+            }
+            # Handle string values validation
+            elseif ($key -in @("AppName", "Version", "ResultsFontFamily", "LogLevelName")) {
+                if ([string]::IsNullOrEmpty($currentValue)) {
+                    $Global:AppSettings.$key = $defaultSettings[$key]
+                    Write-Verbose "Replaced empty string for '$key' with default: $($defaultSettings[$key])"
+                }
+            }
+            # Handle path validations
+            elseif ($key -in @("DefaultOutputPath", "LogPath")) {
+                if ([string]::IsNullOrEmpty($currentValue)) {
+                    $Global:AppSettings.$key = $defaultSettings[$key]
+                    Write-Verbose "Replaced empty path for '$key' with default: $($defaultSettings[$key])"
+                }
+            }
+            # Handle boolean validations
+            elseif ($key -in @("ExtractCabsAutomatically", "SkipExistingCabExtracts")) {
+                if ($null -eq $currentValue) {
+                    $Global:AppSettings.$key = $defaultSettings[$key]
+                    Write-Verbose "Replaced null boolean for '$key' with default: $($defaultSettings[$key])"
+                }
+            }
         }
     }
 }
@@ -65,7 +145,10 @@ function Create-DefaultSettings {
 function Get-AppSetting {
     param (
         [Parameter(Mandatory=$true)]
-        [string]$Name
+        [string]$Name,
+        
+        [Parameter(Mandatory=$false)]
+        [object]$DefaultValue = $null
     )
     
     # Ensure settings are initialized
@@ -75,23 +158,28 @@ function Get-AppSetting {
     
     # Get property value using reflection (works with PSCustomObject)
     if ($Global:AppSettings.PSObject.Properties.Name -contains $Name) {
-        return $Global:AppSettings.$Name
+        $value = $Global:AppSettings.$Name
+        
+        # Return default if value is null
+        if ($null -eq $value -and $null -ne $DefaultValue) {
+            return $DefaultValue
+        }
+        
+        return $value
     }
     else {
-        Write-Warning "Setting '$Name' not found"
-        return $null
+        Write-Warning "Setting '$Name' not found, returning default value"
+        return $DefaultValue
     }
 }
-
-# This is a targeted fix for the Set-AppSetting function to handle null values properly
 
 function Set-AppSetting {
     param (
         [Parameter(Mandatory=$true)]
         [string]$Name,
         
-        [Parameter(Mandatory=$false)]  # Changed from Mandatory=$true to allow null values
-        [AllowNull()]                  # Explicitly allow null values
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
         [object]$Value
     )
     
@@ -100,14 +188,21 @@ function Set-AppSetting {
         Initialize-Settings
     }
     
-    # Check if property exists
-    if ($Global:AppSettings.PSObject.Properties.Name -contains $Name) {
-        # Set property via reflection
-        $Global:AppSettings.$Name = $Value
+    try {
+        # Check if property exists
+        if ($Global:AppSettings.PSObject.Properties.Name -contains $Name) {
+            # Set property via reflection
+            $Global:AppSettings.$Name = $Value
+        }
+        else {
+            # Add new property
+            $Global:AppSettings | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+        }
+        return $true
     }
-    else {
-        # Add new property
-        $Global:AppSettings | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+    catch {
+        Write-Warning "Failed to set setting '$Name': $_"
+        return $false
     }
 }
 
@@ -117,6 +212,9 @@ function Save-AppSettings {
         if ($null -eq $Global:AppSettings) {
             Initialize-Settings
         }
+        
+        # Run validation before saving
+        Validate-Settings
         
         # Convert to JSON and save
         # Use Depth parameter to ensure all nested objects are properly serialized
@@ -128,6 +226,50 @@ function Save-AppSettings {
     }
     catch {
         Write-Warning "Failed to save settings: $_"
+        return $false
+    }
+}
+
+# Create a backup of the settings file
+function Backup-Settings {
+    try {
+        if (Test-Path -Path $script:SettingsPath) {
+            $backupFolder = Join-Path -Path (Split-Path -Parent $script:SettingsPath) -ChildPath "backups"
+            
+            if (-not (Test-Path -Path $backupFolder)) {
+                New-Item -Path $backupFolder -ItemType Directory -Force | Out-Null
+            }
+            
+            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+            $backupPath = Join-Path -Path $backupFolder -ChildPath "settings_$timestamp.json"
+            
+            Copy-Item -Path $script:SettingsPath -Destination $backupPath -Force
+            Write-Verbose "Settings backed up to $backupPath"
+            return $true
+        }
+        
+        return $false
+    }
+    catch {
+        Write-Warning "Failed to back up settings: $_"
+        return $false
+    }
+}
+
+# Reset settings to default
+function Reset-Settings {
+    try {
+        # Create backup before resetting
+        Backup-Settings
+        
+        # Create default settings
+        Create-DefaultSettings
+        
+        Write-Verbose "Settings reset to default values"
+        return $true
+    }
+    catch {
+        Write-Warning "Failed to reset settings: $_"
         return $false
     }
 }

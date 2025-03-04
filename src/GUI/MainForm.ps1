@@ -140,7 +140,9 @@ function Setup-AnalysisTab {
         $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
         $folderBrowser.Description = "Select DiagLogs folder"
         if ($folderBrowser.ShowDialog() -eq 'OK') {
-            $txtSource.Text = $folderBrowser.SelectedPath
+            # Use $this to find the control in the parent panel
+            $txtBox = $this.Parent.Controls["SourcePath"]
+            $txtBox.Text = $folderBrowser.SelectedPath
         }
     })
     $panel.Controls.Add($btnSource)
@@ -353,7 +355,44 @@ function Setup-AnalysisTab {
     $rtbResults.Size = New-Object System.Drawing.Size(570, 200)
     $rtbResults.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     $rtbResults.ReadOnly = $true
-    $rtbResults.Font = New-Object System.Drawing.Font((Get-AppSetting -Name "ResultsFontFamily"), (Get-AppSetting -Name "ResultsFontSize"))
+
+    try {
+        $fontFamily = Get-AppSetting -Name "ResultsFontFamily"
+        $fontSize = Get-AppSetting -Name "ResultsFontSize"
+        
+        # Verify font family is valid
+        if ([string]::IsNullOrEmpty($fontFamily)) {
+            $fontFamily = "Consolas" # Default fallback
+        }
+        
+        # Check if the font family actually exists on the system
+        $fontExists = $false
+        foreach ($family in [System.Drawing.FontFamily]::Families) {
+            if ($family.Name -eq $fontFamily) {
+                $fontExists = $true
+                break
+            }
+        }
+        
+        # If the configured font doesn't exist, use a system font that should be available
+        if (-not $fontExists) {
+            $fontFamily = "Arial" # Widely available system font
+        }
+        
+        # Ensure font size is valid
+        if ($null -eq $fontSize -or -not ($fontSize -is [int]) -or $fontSize -lt 8 -or $fontSize -gt 72) {
+            $fontSize = 9 # Default fallback size
+        }
+        
+        # Now create the font with validated values
+        $rtbResults.Font = New-Object System.Drawing.Font($fontFamily, $fontSize)
+    }
+    catch {
+        # If anything goes wrong, use a basic system font
+        Write-Host "Error setting custom font: $_" -ForegroundColor Yellow
+        $rtbResults.Font = New-Object System.Drawing.Font("Arial", 9)
+    }
+
     $rtbResults.BackColor = [System.Drawing.Color]::White
     $rtbResults.MultiLine = $true
     $rtbResults.ScrollBars = "Both"
@@ -627,7 +666,43 @@ $rtbResults.Location = New-Object System.Drawing.Point(10, 260)
 $rtbResults.Size = New-Object System.Drawing.Size(570, 210)
 $rtbResults.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
 $rtbResults.ReadOnly = $true
-$rtbResults.Font = New-Object System.Drawing.Font((Get-AppSetting -Name "ResultsFontFamily"), (Get-AppSetting -Name "ResultsFontSize"))
+
+try {
+    $fontFamily = Get-AppSetting -Name "ResultsFontFamily"
+    $fontSize = Get-AppSetting -Name "ResultsFontSize"
+    
+    # Verify font family is valid
+    if ([string]::IsNullOrEmpty($fontFamily)) {
+        $fontFamily = "Consolas" # Default fallback
+    }
+    
+    # Check if the font family actually exists on the system
+    $fontExists = $false
+    foreach ($family in [System.Drawing.FontFamily]::Families) {
+        if ($family.Name -eq $fontFamily) {
+            $fontExists = $true
+            break
+        }
+    }
+    
+    # If the configured font doesn't exist, use a system font that should be available
+    if (-not $fontExists) {
+        $fontFamily = "Arial" # Widely available system font
+    }
+    
+    # Ensure font size is valid
+    if ($null -eq $fontSize -or -not ($fontSize -is [int]) -or $fontSize -lt 8 -or $fontSize -gt 72) {
+        $fontSize = 9 # Default fallback size
+    }
+    
+    # Now create the font with validated values
+    $rtbResults.Font = New-Object System.Drawing.Font($fontFamily, $fontSize)
+}
+catch {
+    # If anything goes wrong, use a basic system font
+    Write-Host "Error setting custom font: $_" -ForegroundColor Yellow
+    $rtbResults.Font = New-Object System.Drawing.Font("Arial", 9)
+}
 $rtbResults.BackColor = [System.Drawing.Color]::White
 $rtbResults.MultiLine = $true
 $rtbResults.ScrollBars = "Both"
@@ -881,7 +956,43 @@ $rtbResults.Location = New-Object System.Drawing.Point(10, 310)
 $rtbResults.Size = New-Object System.Drawing.Size(570, 160)
 $rtbResults.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
 $rtbResults.ReadOnly = $true
-$rtbResults.Font = New-Object System.Drawing.Font((Get-AppSetting -Name "ResultsFontFamily"), (Get-AppSetting -Name "ResultsFontSize"))
+
+try {
+    $fontFamily = Get-AppSetting -Name "ResultsFontFamily"
+    $fontSize = Get-AppSetting -Name "ResultsFontSize"
+    
+    # Verify font family is valid
+    if ([string]::IsNullOrEmpty($fontFamily)) {
+        $fontFamily = "Consolas" # Default fallback
+    }
+    
+    # Check if the font family actually exists on the system
+    $fontExists = $false
+    foreach ($family in [System.Drawing.FontFamily]::Families) {
+        if ($family.Name -eq $fontFamily) {
+            $fontExists = $true
+            break
+        }
+    }
+    
+    # If the configured font doesn't exist, use a system font that should be available
+    if (-not $fontExists) {
+        $fontFamily = "Arial" # Widely available system font
+    }
+    
+    # Ensure font size is valid
+    if ($null -eq $fontSize -or -not ($fontSize -is [int]) -or $fontSize -lt 8 -or $fontSize -gt 72) {
+        $fontSize = 9 # Default fallback size
+    }
+    
+    # Now create the font with validated values
+    $rtbResults.Font = New-Object System.Drawing.Font($fontFamily, $fontSize)
+}
+catch {
+    # If anything goes wrong, use a basic system font
+    Write-Host "Error setting custom font: $_" -ForegroundColor Yellow
+    $rtbResults.Font = New-Object System.Drawing.Font("Arial", 9)
+}
 $rtbResults.BackColor = [System.Drawing.Color]::White
 $rtbResults.MultiLine = $true
 $rtbResults.ScrollBars = "Both"

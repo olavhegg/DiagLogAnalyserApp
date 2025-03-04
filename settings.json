@@ -1,9 +1,9 @@
 {
   "AppName": "DiagLog Analyzer",
   "Version": "1.0.0",
-  "DefaultOutputPath": null,
+  "DefaultOutputPath": "C:\\Users\\OlavHeggelund\\Documents\\DiagLogAnalyserApp\\DiagLogAnalyserApp\\src\\Config\\..\\..\\results",
   "LogPath": ".\\logs",
-  "MaxFileSizeForTextSearch": null,
+  "MaxFileSizeForTextSearch": 52428800,
   "DefaultFileTypesToSearch": [
     ".log",
     ".txt",
@@ -16,7 +16,7 @@
   "SkipExistingCabExtracts": true,
   "MainFormWidth": 900,
   "MainFormHeight": 700,
-  "ResultsFontFamily": null,
-  "ResultsFontSize": null,
+  "ResultsFontFamily": "Consolas",
+  "ResultsFontSize": 9,
   "LogLevelName": "INFO"
 }

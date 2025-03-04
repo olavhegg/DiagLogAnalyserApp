@@ -76,7 +76,15 @@ function Write-Log {
     
     # Ensure log file is initialized
     if ($null -eq $script:CurrentLogFile) {
-        Initialize-Logging
+        try {
+            Initialize-Logging
+        }
+        catch {
+            # If initialization fails, create a basic log file
+            $script:CurrentLogFile = Join-Path -Path $env:TEMP -ChildPath "DiagLogAnalyzer-fallback.log"
+            "# DiagLog Analyzer - Fallback Log" | Out-File -FilePath $script:CurrentLogFile -Encoding utf8
+            "# Error initializing proper logging: $_" | Out-File -FilePath $script:CurrentLogFile -Append -Encoding utf8
+        }
     }
     
     # Format log entry
@@ -84,14 +92,27 @@ function Write-Log {
     $logEntry = "[$timestamp] [$Level] [$Component] $Message"
     
     # Write to log file
-    $logEntry | Out-File -FilePath $script:CurrentLogFile -Append -Encoding utf8
+    try {
+        $logEntry | Out-File -FilePath $script:CurrentLogFile -Append -Encoding utf8
+    }
+    catch {
+        # If writing to log file fails, try writing to a fallback location
+        try {
+            $fallbackLog = Join-Path -Path $env:TEMP -ChildPath "DiagLogAnalyzer-fallback.log"
+            $logEntry + " (Error writing to main log: $_)" | Out-File -FilePath $fallbackLog -Append -Encoding utf8
+        }
+        catch {
+            # Last resort: just output to console
+            Write-Host "Failed to write to any log: $logEntry" -ForegroundColor Red
+        }
+    }
     
     # Also write to console for certain levels
     if ([int]$Level -ge [int][LogLevel]::WARNING) {
         switch ($Level) {
             ([LogLevel]::WARNING) { Write-Warning $Message }
             ([LogLevel]::ERROR) { Write-Error $Message }
-            default { Write-Output $logEntry }
+            default { Write-Host $logEntry }
         }
     }
 }
