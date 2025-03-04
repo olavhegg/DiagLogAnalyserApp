@@ -949,6 +949,38 @@ $numMaxFileSize.Maximum = 1000
 $numMaxFileSize.Value = ((Get-AppSetting -Name "MaxFileSizeForTextSearch") / 1MB)
 $grpGeneral.Controls.Add($numMaxFileSize)
 
+$lblLogLevel = New-Object System.Windows.Forms.Label
+$lblLogLevel.Location = New-Object System.Drawing.Point(10, 90)
+$lblLogLevel.Size = New-Object System.Drawing.Size(150, 20)
+$lblLogLevel.Text = "Logging Level:"
+$grpGeneral.Controls.Add($lblLogLevel)
+
+$cboLogLevel = New-Object System.Windows.Forms.ComboBox
+$cboLogLevel.Location = New-Object System.Drawing.Point(160, 90)
+$cboLogLevel.Size = New-Object System.Drawing.Size(120, 20)
+$cboLogLevel.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+
+# Add log levels to the dropdown
+$cboLogLevel.Items.Add("DEBUG")
+$cboLogLevel.Items.Add("INFO")
+$cboLogLevel.Items.Add("WARNING")
+$cboLogLevel.Items.Add("ERROR")
+
+# Set current value based on settings
+$currentLogLevel = Get-AppSetting -Name "LogLevelName"
+if ([string]::IsNullOrEmpty($currentLogLevel)) {
+    $currentLogLevel = "INFO"
+}
+
+$levelIndex = $cboLogLevel.Items.IndexOf($currentLogLevel)
+if ($levelIndex -ge 0) {
+    $cboLogLevel.SelectedIndex = $levelIndex
+} else {
+    $cboLogLevel.SelectedIndex = 1  # Default to INFO (index 1)
+}
+
+$grpGeneral.Controls.Add($cboLogLevel)
+
 $grpUI = New-Object System.Windows.Forms.GroupBox
 $grpUI.Location = New-Object System.Drawing.Point(10, 150)
 $grpUI.Size = New-Object System.Drawing.Size(570, 120)
@@ -1020,22 +1052,35 @@ $btnSaveSettings.Location = New-Object System.Drawing.Point(10, 280)
 $btnSaveSettings.Size = New-Object System.Drawing.Size(150, 30)
 $btnSaveSettings.Text = "Save Settings"
 $btnSaveSettings.Add_Click({
-# Update settings
-Set-AppSetting -Name "DefaultOutputPath" -Value $txtDefaultOutput.Text
-Set-AppSetting -Name "MaxFileSizeForTextSearch" -Value ($numMaxFileSize.Value * 1MB)
-Set-AppSetting -Name "ResultsFontFamily" -Value $cboFontFamily.SelectedItem
-Set-AppSetting -Name "ResultsFontSize" -Value $numFontSize.Value
+    # Update settings
+    Set-AppSetting -Name "DefaultOutputPath" -Value $txtDefaultOutput.Text
+    Set-AppSetting -Name "MaxFileSizeForTextSearch" -Value ($numMaxFileSize.Value * 1MB)
+    Set-AppSetting -Name "ResultsFontFamily" -Value $cboFontFamily.SelectedItem
+    Set-AppSetting -Name "ResultsFontSize" -Value $numFontSize.Value
+    
+    if ($null -ne $cboLogLevel.SelectedItem) {
+        $selectedLogLevel = $cboLogLevel.SelectedItem.ToString()
+        Set-AppSetting -Name "LogLevelName" -Value $selectedLogLevel
+        
+        # Update the active log level
+        try {
+            Set-LogLevel -Level $selectedLogLevel
+        } catch {
+            Write-Host "Note: Log level will be applied on next application start"
+        }
+    }
 
-# Save settings to file
-$success = Save-AppSettings
+    # Save settings to file
+    $success = Save-AppSettings
 
-if ($success) {
-    [System.Windows.MessageBox]::Show("Settings saved successfully. Some changes may require restarting the application.", "Settings Saved", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
-}
-else {
-    [System.Windows.MessageBox]::Show("Failed to save settings.", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-}
+    if ($success) {
+        [System.Windows.MessageBox]::Show("Settings saved successfully. Some changes may require restarting the application.", "Settings Saved", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+    }
+    else {
+        [System.Windows.MessageBox]::Show("Failed to save settings.", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+    }
 })
+
 $panel.Controls.Add($btnSaveSettings)
 
 # Add panel to tab page

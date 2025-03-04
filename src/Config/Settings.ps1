@@ -1,70 +1,65 @@
 # DiagLog Analyzer - Settings Management
 # This module handles application settings and configuration
 
-# Default settings
-$script:AppSettings = @{
-    # Application info
-    AppName = "DiagLog Analyzer"
-    Version = "1.0.0"
-    
-    # Default paths
-    DefaultOutputPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\results"
-    LogPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\logs"
-    
-    # Analysis settings
-    MaxFileSizeForTextSearch = 50MB  # Skip larger files for text search
-    DefaultFileTypesToSearch = @(".log", ".txt", ".xml", ".html", ".json", ".csv")
-    
-    # CAB extraction settings
-    ExtractCabsAutomatically = $false
-    SkipExistingCabExtracts = $true
-    
-    # UI settings
-    MainFormWidth = 900
-    MainFormHeight = 700
-    ResultsFontFamily = "Consolas"
-    ResultsFontSize = 9
-}
+# Default settings file path
+$script:SettingsPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\settings.json"
 
-# User settings file path
-$script:UserSettingsPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\settings.json"
+# Global variable to store settings
+$Global:AppSettings = $null
 
 function Initialize-Settings {
-    # Load user settings if they exist, otherwise use defaults
-    if (Test-Path -Path $script:UserSettingsPath) {
+    # Check if settings file exists
+    if (Test-Path -Path $script:SettingsPath) {
         try {
-            $userSettings = Get-Content -Path $script:UserSettingsPath -Raw | ConvertFrom-Json
-            
-            # Convert from JSON to hashtable and merge with defaults
-            $userSettingsHash = @{}
-            $userSettings.PSObject.Properties | ForEach-Object {
-                $userSettingsHash[$_.Name] = $_.Value
-            }
-            
-            # Update default settings with user settings
-            foreach ($key in $userSettingsHash.Keys) {
-                if ($null -ne $userSettingsHash[$key]) {
-                    $script:AppSettings[$key] = $userSettingsHash[$key]
-                }
-            }
-            
-            Write-Verbose "User settings loaded from $script:UserSettingsPath"
+            # Load settings from JSON file
+            $Global:AppSettings = Get-Content -Path $script:SettingsPath -Raw | ConvertFrom-Json
+            Write-Verbose "Settings loaded from $script:SettingsPath"
         }
         catch {
-            Write-Warning "Failed to load user settings: $_"
+            Write-Warning "Failed to load settings: $_"
+            # Create default settings
+            Create-DefaultSettings
         }
     }
     else {
-        Write-Verbose "No user settings file found. Using defaults."
+        # Create default settings
+        Create-DefaultSettings
     }
     
     # Ensure directories exist
-    $paths = @($script:AppSettings.DefaultOutputPath, $script:AppSettings.LogPath)
+    $outputPath = Get-AppSetting -Name "DefaultOutputPath"
+    $logPath = Get-AppSetting -Name "LogPath"
+    
+    $paths = @($outputPath, $logPath)
     foreach ($path in $paths) {
-        if (-not (Test-Path -Path $path)) {
+        if (-not [string]::IsNullOrEmpty($path) -and -not (Test-Path -Path $path)) {
             New-Item -Path $path -ItemType Directory -Force | Out-Null
         }
     }
+}
+
+function Create-DefaultSettings {
+    # Default settings
+    $Global:AppSettings = [PSCustomObject]@{
+        AppName = "DiagLog Analyzer"
+        Version = "1.0.0"
+        DefaultOutputPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\results"
+        LogPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\logs"
+        MaxFileSizeForTextSearch = 50MB
+        DefaultFileTypesToSearch = @(".log", ".txt", ".xml", ".html", ".json", ".csv")
+        ExtractCabsAutomatically = $false
+        SkipExistingCabExtracts = $true
+        MainFormWidth = 900
+        MainFormHeight = 700
+        ResultsFontFamily = "Consolas"
+        ResultsFontSize = 9
+        LogLevelName = "INFO"
+    }
+    
+    # Save default settings
+    Save-AppSettings
+    
+    Write-Verbose "Created default settings"
 }
 
 function Get-AppSetting {
@@ -73,8 +68,14 @@ function Get-AppSetting {
         [string]$Name
     )
     
-    if ($script:AppSettings.ContainsKey($Name)) {
-        return $script:AppSettings[$Name]
+    # Ensure settings are initialized
+    if ($null -eq $Global:AppSettings) {
+        Initialize-Settings
+    }
+    
+    # Get property value using reflection (works with PSCustomObject)
+    if ($Global:AppSettings.PSObject.Properties.Name -contains $Name) {
+        return $Global:AppSettings.$Name
     }
     else {
         Write-Warning "Setting '$Name' not found"
@@ -82,22 +83,47 @@ function Get-AppSetting {
     }
 }
 
+# This is a targeted fix for the Set-AppSetting function to handle null values properly
+
 function Set-AppSetting {
     param (
         [Parameter(Mandatory=$true)]
         [string]$Name,
         
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory=$false)]  # Changed from Mandatory=$true to allow null values
+        [AllowNull()]                  # Explicitly allow null values
         [object]$Value
     )
     
-    $script:AppSettings[$Name] = $Value
+    # Ensure settings are initialized
+    if ($null -eq $Global:AppSettings) {
+        Initialize-Settings
+    }
+    
+    # Check if property exists
+    if ($Global:AppSettings.PSObject.Properties.Name -contains $Name) {
+        # Set property via reflection
+        $Global:AppSettings.$Name = $Value
+    }
+    else {
+        # Add new property
+        $Global:AppSettings | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+    }
 }
 
 function Save-AppSettings {
     try {
-        $script:AppSettings | ConvertTo-Json | Set-Content -Path $script:UserSettingsPath
-        Write-Verbose "Settings saved to $script:UserSettingsPath"
+        # Ensure settings are initialized
+        if ($null -eq $Global:AppSettings) {
+            Initialize-Settings
+        }
+        
+        # Convert to JSON and save
+        # Use Depth parameter to ensure all nested objects are properly serialized
+        $jsonSettings = ConvertTo-Json -InputObject $Global:AppSettings -Depth 10 -Compress:$false
+        Set-Content -Path $script:SettingsPath -Value $jsonSettings -Encoding UTF8
+        
+        Write-Verbose "Settings saved to $script:SettingsPath"
         return $true
     }
     catch {

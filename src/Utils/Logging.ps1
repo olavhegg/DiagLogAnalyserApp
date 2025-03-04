@@ -23,6 +23,16 @@ function Initialize-Logging {
         [LogLevel]$LogLevel = [LogLevel]::INFO
     )
     
+    # Try to use log level from settings
+    try {
+        $logLevelName = Get-AppSetting -Name "LogLevelName"
+        if (-not [string]::IsNullOrEmpty($logLevelName)) {
+            $LogLevel = [LogLevel]::$logLevelName
+        }
+    } catch {
+        # Silently fall back to default if there's an error
+    }
+    
     $script:CurrentLogLevel = $LogLevel
     
     # Create log directory if it doesn't exist
@@ -93,8 +103,23 @@ function Get-LogFile {
 function Set-LogLevel {
     param (
         [Parameter(Mandatory=$true)]
-        [LogLevel]$Level
+        [object]$Level
     )
+    
+    if ($Level -is [string]) {
+        # Convert string to enum
+        try {
+            $Level = [LogLevel]::$Level
+        }
+        catch {
+            Write-Warning "Invalid log level string: $Level. Defaulting to INFO."
+            $Level = [LogLevel]::INFO
+        }
+    }
+    elseif ($Level -isnot [LogLevel]) {
+        Write-Warning "Invalid log level type. Defaulting to INFO."
+        $Level = [LogLevel]::INFO
+    }
     
     $script:CurrentLogLevel = $Level
     Write-Log -Message "Log level changed to $Level" -Level INFO
