@@ -60,10 +60,20 @@ Write-Host "Starting DiagLog Analyzer..." -ForegroundColor Cyan
 # Initialize logging
 Initialize-Logging
 
-# Launch the main form
+# Find a valid PowerShell executable path for the icon
+$powerShellPath = if (Test-Path "$PSHOME\powershell.exe") {
+    "$PSHOME\powershell.exe"
+} elseif (Test-Path "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe") {
+    "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+} else {
+    # Fallback to not using an icon
+    $null
+}
+
+# Launch the main form with the corrected path
 try {
     Write-Log -Message "Application started" -Level INFO
-    Show-MainForm
+    Show-MainForm -PowerShellPath $powerShellPath
 }
 catch {
     Write-Log -Message "Error starting application: $_" -Level ERROR

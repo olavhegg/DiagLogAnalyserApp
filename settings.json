@@ -1,0 +1,21 @@
+{
+  "ResultsFontFamily": "Consolas",
+  "LogPath": "C:\\Users\\OlavHeggelund\\Documents\\DiagLogAnalyserApp\\DiagLogAnalyserApp\\src\\Config\\..\\..\\logs",
+  "ExtractCabsAutomatically": false,
+  "ResultsFontSize": 9,
+  "Version": "1.0.0",
+  "MainFormHeight": 700,
+  "SkipExistingCabExtracts": true,
+  "DefaultOutputPath": "C:\\Users\\OlavHeggelund\\Documents\\DiagLogAnalyserApp\\DiagLogAnalyserApp\\src\\Config\\..\\..\\results",
+  "AppName": "DiagLog Analyzer",
+  "DefaultFileTypesToSearch": [
+    ".log",
+    ".txt",
+    ".xml",
+    ".html",
+    ".json",
+    ".csv"
+  ],
+  "MainFormWidth": 900,
+  "MaxFileSizeForTextSearch": 52428800
+}

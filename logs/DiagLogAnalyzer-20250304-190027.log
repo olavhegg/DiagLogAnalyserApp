@@ -1,0 +1,8 @@
+# DiagLog Analyzer Log File
+# Started: 2025-03-04 19:00:27
+# Log Level: INFO
+# ----------------------------------------
+[2025-03-04 19:00:27.456] [INFO] [General] Logging initialized
+[2025-03-04 19:00:27.458] [INFO] [General] Application started
+[2025-03-04 19:00:27.693] [ERROR] [General] Error starting application: Cannot convert argument "dpi", with value: "i", for "GetHeight" to type "System.Single": "Cannot convert value "i" to type "System.Single". Error: "The input string 'i' was not in a correct format.""
+[2025-03-04 19:00:27.695] [INFO] [General] Application closed

@@ -21,12 +21,26 @@ $script:AnalysisResults = $null
 $script:MainForm = $null
 
 function Show-MainForm {
+    param(
+        [string]$PowerShellPath = "$PSHOME\powershell.exe"
+    )
+    
     # Create the main form
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "DiagLog Analyzer"
     $form.Size = New-Object System.Drawing.Size ((Get-AppSetting -Name "MainFormWidth"), (Get-AppSetting -Name "MainFormHeight"))
     $form.StartPosition = "CenterScreen"
-    $form.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon("$PSHOME\powershell.exe")
+    
+    # Try to set the icon if the path exists
+    if ($PowerShellPath -and (Test-Path $PowerShellPath)) {
+        try {
+            $form.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($PowerShellPath)
+        } catch {
+            Write-Log -Message "Could not load icon from $PowerShellPath : $_" -Level WARNING -Component "GUI"
+            # Continue without an icon
+        }
+    }
+    
     
     # Store reference to the form
     $script:MainForm = $form
@@ -955,10 +969,19 @@ $cboFontFamily.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownLis
 # Add system monospace fonts
 $fonts = [System.Drawing.FontFamily]::Families | Where-Object { $_.IsStyleAvailable([System.Drawing.FontStyle]::Regular) }
 $monospaceFonts = $fonts | Where-Object { 
-$font = New-Object System.Drawing.Font($_.Name, 10)
-$result = ($font.GetHeight('i') -eq $font.GetHeight('W'))
-$font.Dispose()
-$result
+    try {
+        $font = New-Object System.Drawing.Font($_.Name, 10)
+        # Get character width rather than height
+        $iWidth = [System.Windows.Forms.TextRenderer]::MeasureText("i", $font).Width
+        $WWidth = [System.Windows.Forms.TextRenderer]::MeasureText("W", $font).Width
+        $result = ($iWidth -eq $WWidth)
+        $font.Dispose()
+        $result
+    }
+    catch {
+        # Skip fonts that cause errors
+        $false
+    }
 } | Select-Object -ExpandProperty Name
 
 foreach ($font in $monospaceFonts) {
