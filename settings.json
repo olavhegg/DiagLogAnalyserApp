@@ -1,8 +1,8 @@
 {
   "AppName": "DiagLog Analyzer",
   "Version": "1.0.0",
-  "DefaultOutputPath": "C:\\Users\\OlavHeggelund\\Documents\\DiagLogAnalyserApp\\DiagLogAnalyserApp\\src\\Config\\..\\..\\results",
-  "LogPath": ".\\logs",
+  "DefaultOutputPath": "results",
+  "LogPath": "logs",
   "MaxFileSizeForTextSearch": 52428800,
   "DefaultFileTypesToSearch": [
     ".log",

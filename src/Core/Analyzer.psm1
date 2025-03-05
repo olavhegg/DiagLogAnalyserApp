@@ -1,9 +1,15 @@
 # DiagLog Analyzer - Core Analyzer Module
 # This module handles file structure analysis
 
-# Import dependencies
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Logging.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\FileSystem.ps1")
+# Import required modules properly
+$modulesToImport = @(
+    (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Logging.psm1"),
+    (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\FileSystem.psm1")
+)
+
+foreach ($module in $modulesToImport) {
+    Import-Module $module -Force
+}
 
 # Function to analyze folder structure
 function Start-FolderAnalysis {
@@ -185,3 +191,13 @@ $(
     
     return $summary
 }
+
+function Start-LogAnalysis {
+    param(
+        [string]$LogPath
+    )
+    Write-Log "Starting analysis of: $LogPath"
+    # Add analysis logic here
+}
+
+Export-ModuleMember -Function Start-LogAnalysis

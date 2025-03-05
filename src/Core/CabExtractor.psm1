@@ -1,10 +1,13 @@
 # DiagLog Analyzer - CAB Extractor Module
 # This module handles extraction of CAB files
 
-# Import dependencies
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Logging.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\FileSystem.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Config\Settings.ps1")
+# Import dependencies using relative paths from module root
+$modulePath = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+
+# Import required modules
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Utils\Logging.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Utils\FileSystem.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Config\Settings.psm1") -Force
 
 # Function to extract a single CAB file
 function Expand-CabFile {
@@ -15,27 +18,36 @@ function Expand-CabFile {
         [Parameter(Mandatory=$false)]
         [string]$DestinationPath = $null,
         
-        [switch]$SkipIfExists = $true
+        [switch]$SkipIfExists = $true,
+        
+        [switch]$ValidateExtraction = $true,
+        
+        [switch]$CleanupOnFailure = $true
     )
     
     try {
-        # Verify the cab file exists
-        if (-not (Test-Path -Path $CabFilePath)) {
-            Write-Log -Message "CAB file not found: $CabFilePath" -Level ERROR -Component "CabExtractor"
-            return [PSCustomObject]@{
-                Success = $false
-                CabPath = $CabFilePath
-                ExtractedPath = $null
-                Message = "CAB file not found"
-            }
+        # Verify the cab file exists and is valid
+        if (-not (Test-Path -Path $CabFilePath -PathType Leaf)) {
+            throw "CAB file not found or is not a file: $CabFilePath"
         }
-        
+
+        # Verify file extension
+        if ([System.IO.Path]::GetExtension($CabFilePath) -ne '.cab') {
+            throw "File is not a CAB file: $CabFilePath"
+        }
+
         # Create destination path if not specified
         if ([string]::IsNullOrEmpty($DestinationPath)) {
             $cabFileName = [System.IO.Path]::GetFileName($CabFilePath)
             $cabDirectory = [System.IO.Path]::GetDirectoryName($CabFilePath)
             $extractFolderName = [System.IO.Path]::GetFileNameWithoutExtension($cabFileName)
             $DestinationPath = Join-Path -Path $cabDirectory -ChildPath "$extractFolderName"
+        }
+        
+        # Get expected contents before extraction
+        $expectedContents = Get-CabContents -CabFilePath $CabFilePath
+        if ($null -eq $expectedContents) {
+            throw "Failed to read CAB contents"
         }
         
         # Check if destination already exists
@@ -46,46 +58,62 @@ function Expand-CabFile {
                 CabPath = $CabFilePath
                 ExtractedPath = $DestinationPath
                 Message = "Extraction skipped, folder already exists"
+                Files = $expectedContents
             }
         }
         
         # Create the destination directory
-        if (-not (Test-Path -Path $DestinationPath)) {
-            New-Item -Path $DestinationPath -ItemType Directory -Force | Out-Null
-        }
+        New-Item -Path $DestinationPath -ItemType Directory -Force | Out-Null
         
         Write-Log -Message "Extracting CAB file: $CabFilePath to $DestinationPath" -Level INFO -Component "CabExtractor"
         
-        # Use expand.exe to extract CAB files (native Windows tool)
+        # Use expand.exe with better output capture
         $expandCmd = "expand.exe -F:* `"$CabFilePath`" `"$DestinationPath`""
-        $result = Start-Process -FilePath "cmd.exe" -ArgumentList "/c $expandCmd" -NoNewWindow -Wait -PassThru
+        $output = & cmd.exe /c $expandCmd 2>&1
+        $exitCode = $LASTEXITCODE
         
-        if ($result.ExitCode -eq 0) {
+        if ($exitCode -eq 0) {
+            if ($ValidateExtraction) {
+                # Verify extracted files
+                $extractedFiles = Get-ChildItem -Path $DestinationPath -Recurse -File
+                $missingFiles = $expectedContents | Where-Object {
+                    -not (Test-Path (Join-Path -Path $DestinationPath -ChildPath $_.Name))
+                }
+                
+                if ($missingFiles) {
+                    throw "Extraction validation failed. Missing files: $($missingFiles.Name -join ', ')"
+                }
+            }
+            
             Write-Log -Message "CAB extraction completed successfully: $CabFilePath" -Level INFO -Component "CabExtractor"
             return [PSCustomObject]@{
                 Success = $true
                 CabPath = $CabFilePath
                 ExtractedPath = $DestinationPath
                 Message = "Extraction successful"
+                Files = $expectedContents
+                Output = $output
             }
         }
         else {
-            Write-Log -Message "CAB extraction failed with exit code $($result.ExitCode): $CabFilePath" -Level ERROR -Component "CabExtractor"
-            return [PSCustomObject]@{
-                Success = $false
-                CabPath = $CabFilePath
-                ExtractedPath = $null
-                Message = "Extraction failed with exit code: $($result.ExitCode)"
-            }
+            throw "Expand.exe failed with exit code $exitCode. Output: $($output -join "`n")"
         }
     }
     catch {
         Write-Log -Message "Exception during CAB extraction: $_" -Level ERROR -Component "CabExtractor"
+        
+        # Cleanup on failure if requested
+        if ($CleanupOnFailure -and (Test-Path -Path $DestinationPath)) {
+            Write-Log -Message "Cleaning up failed extraction directory: $DestinationPath" -Level INFO -Component "CabExtractor"
+            Remove-Item -Path $DestinationPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        
         return [PSCustomObject]@{
             Success = $false
             CabPath = $CabFilePath
             ExtractedPath = $null
             Message = "Exception: $_"
+            Output = $output
         }
     }
 }
@@ -151,27 +179,36 @@ function Get-CabContents {
     
     try {
         # Verify the cab file exists
-        if (-not (Test-Path -Path $CabFilePath)) {
-            Write-Log -Message "CAB file not found: $CabFilePath" -Level ERROR -Component "CabExtractor"
-            return $null
+        if (-not (Test-Path -Path $CabFilePath -PathType Leaf)) {
+            throw "CAB file not found or is not a file: $CabFilePath"
         }
         
-        Write-Log -Message "Listing CAB file contents: $CabFilePath" -Level INFO -Component "CabExtractor"
+        Write-Log -Message "Listing CAB file contents: $CabFilePath" -Level DEBUG -Component "CabExtractor"
         
         # Use expand.exe with -D option to list contents
         $expandCmd = "expand.exe -D `"$CabFilePath`""
         $output = & cmd.exe /c $expandCmd 2>&1
         
-        # Parse the output to extract file listing
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to list CAB contents. Exit code: $LASTEXITCODE. Output: $($output -join "`n")"
+        }
+        
+        # Parse the output to extract file listing with improved regex
         $files = @()
         foreach ($line in $output) {
             if ($line -match '^\s*(.+?)\s+(\d+)\s*$') {
                 $fileName = $matches[1].Trim()
                 $fileSize = [int]$matches[2]
                 
+                # Skip if fileName is empty or contains only whitespace
+                if ([string]::IsNullOrWhiteSpace($fileName)) {
+                    continue
+                }
+                
                 $files += [PSCustomObject]@{
                     Name = $fileName
                     Size = $fileSize
+                    Path = $fileName # Full path within the CAB
                 }
             }
         }

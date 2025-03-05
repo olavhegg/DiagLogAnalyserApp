@@ -1,98 +1,80 @@
-# DiagLog Analyzer Launcher
-# This script launches the DiagLog Analyzer application and handles initialization
+# DiagLog Analyzer - Main Launcher Script
 
-# Get script path
-$scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Add required assemblies first
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 
-# Add error handling
-$ErrorActionPreference = "Stop"
-trap {
-    Write-Host "Critical error occurred: $_" -ForegroundColor Red
-    Write-Host "Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
-    
-    # Show an error dialog if possible
-    try {
-        Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.MessageBox]::Show("A critical error occurred:`n`n$_`n`nThe application will now exit.", 
-            "DiagLog Analyzer Error", 
-            [System.Windows.Forms.MessageBoxButtons]::OK, 
-            [System.Windows.Forms.MessageBoxIcon]::Error)
+# Get the root path and ensure it's using Windows path format
+$script:RootPath = $PSScriptRoot
+if (-not $script:RootPath) {
+    $script:RootPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+$script:RootPath = $script:RootPath.Replace('/', '\')
+
+# Create required directories if they don't exist
+$requiredPaths = @(
+    (Join-Path $script:RootPath "logs"),
+    (Join-Path $script:RootPath "results"),
+    (Join-Path $script:RootPath "temp")
+)
+
+foreach ($path in $requiredPaths) {
+    if (-not (Test-Path $path)) {
+        New-Item -Path $path -ItemType Directory -Force | Out-Null
     }
-    catch {
-        # If we can't show a GUI error, at least wait for the user to read the console
-        Write-Host "Press any key to exit..." -ForegroundColor Yellow
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    }
-    
-    exit 1
 }
 
-function Test-Prerequisites {
-    # Check PowerShell version
-    if ($PSVersionTable.PSVersion.Major -lt 5) {
-        throw "DiagLog Analyzer requires PowerShell 5.0 or later. Current version: $($PSVersionTable.PSVersion)"
-    }
+# Module import order is important - define dependencies
+$moduleOrder = @(
+    "src\Config\Settings.psm1",        # Load first - no dependencies
+    "src\Utils\Logging.psm1",          # Depends on Settings
+    "src\Utils\FileSystem.psm1",       # Depends on Logging
+    "src\Core\FileSearch.psm1",        # Depends on FileSystem
+    "src\Core\CabExtractor.psm1",      # Depends on FileSystem
+    "src\Core\Analyzer.psm1",          # Depends on all above
+    "src\GUI\Controls.psm1",           # Depends on Settings
+    "src\GUI\MainForm.psm1"            # Depends on all above
+)
+
+# Import modules in correct order
+foreach ($module in $moduleOrder) {
+    $modulePath = Join-Path -Path $script:RootPath -ChildPath $module
+    Write-Host "Attempting to load module: $modulePath"
     
-    # Check for required modules/assemblies
-    try {
-        Add-Type -AssemblyName System.Windows.Forms
-        Add-Type -AssemblyName System.Drawing
-    }
-    catch {
-        throw "Failed to load required .NET assemblies: $_"
-    }
-    
-    # Check for expand.exe (used for CAB extraction)
-    try {
-        $expandPath = (Get-Command "expand.exe" -ErrorAction SilentlyContinue).Source
-        if (-not $expandPath) {
-            Write-Warning "expand.exe not found in PATH. CAB extraction functionality may be limited."
+    if (Test-Path $modulePath) {
+        try {
+            Import-Module $modulePath -Force -ErrorAction Stop
+            Write-Host "Successfully loaded module: $module" -ForegroundColor Green
+        }
+        catch {
+            Write-Error "Failed to load module $module : $_"
+            exit 1
         }
     }
-    catch {
-        Write-Warning "Failed to check for expand.exe: $_"
-    }
-    
-    # Check for write permissions in the application directory
-    try {
-        $testFile = Join-Path -Path $scriptPath -ChildPath "writetest.tmp"
-        [System.IO.File]::WriteAllText($testFile, "Write test")
-        Remove-Item -Path $testFile -Force
-    }
-    catch {
-        throw "The application doesn't have write permissions in its directory. Please run the application from a location where you have write permissions."
+    else {
+        Write-Error "Required module not found: $modulePath"
+        exit 1
     }
 }
 
-function Start-Application {
-    # Import the main application script
-    try {
-        . (Join-Path -Path $scriptPath -ChildPath "Start-Analysis.ps1")
-    }
-    catch {
-        throw "Failed to load application: $_"
-    }
-}
-
-# Main execution
-Write-Host "DiagLog Analyzer - Starting..." -ForegroundColor Cyan
-
+# Initialize settings and logging
 try {
-    # Check prerequisites
-    Test-Prerequisites
+    Initialize-DLASettings
+    Initialize-DLALogging
+    Write-DLALog -Message "Starting DiagLog Analyzer" -Level INFO
     
-    # Start the application
-    Start-Application
+    # Use Show-MainForm instead of direct form creation
+    Show-MainForm
 }
 catch {
-    Write-Host "Failed to start DiagLog Analyzer: $_" -ForegroundColor Red
-    
-    # Show an error dialog
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show("Failed to start DiagLog Analyzer:`n`n$_", 
-        "Startup Error", 
+    $errorMsg = "Failed to start DiagLog Analyzer: $_"
+    if (Get-Command Write-DLALog -ErrorAction SilentlyContinue) {
+        Write-DLALog -Message $errorMsg -Level ERROR
+    }
+    else {
+        Write-Error $errorMsg
+    }
+    [System.Windows.Forms.MessageBox]::Show($errorMsg, "Error", 
         [System.Windows.Forms.MessageBoxButtons]::OK, 
         [System.Windows.Forms.MessageBoxIcon]::Error)
-    
-    exit 1
 }

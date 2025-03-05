@@ -7,6 +7,32 @@ $script:SettingsPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\settings.
 # Global variable to store settings
 $Global:AppSettings = $null
 
+$script:Config = @{
+    LogPath = Join-Path $PSScriptRoot "../../logs"
+    MaxLogSize = 10MB
+    DefaultSearchPath = [Environment]::GetFolderPath('MyDocuments')
+    DiagnosticSettings = @{
+        DefaultTimeout = 3600  # 1 hour in seconds
+        MaxConcurrentDiags = 3
+        WorkingDirectory = Join-Path $PSScriptRoot "../../temp"
+        ResultsDirectory = Join-Path $PSScriptRoot "../../results"
+        AutoCleanup = $true
+        CleanupAge = 7  # Days
+    }
+}
+
+# Global settings
+$script:Settings = @{
+    LogPath = Join-Path $PSScriptRoot "..\..\logs\diaganalyzer.log"
+    ResultsPath = Join-Path $PSScriptRoot "..\..\results"
+    TempPath = Join-Path $PSScriptRoot "..\..\temp"
+    LogLevel = "DEBUG"  # DEBUG, INFO, WARN, ERROR
+}
+
+function Get-AppSettings {
+    return $script:Config
+}
+
 function Initialize-Settings {
     # Check if settings file exists
     if (Test-Path -Path $script:SettingsPath) {
@@ -116,6 +142,28 @@ function Validate-Settings {
             }
         }
     }
+    
+    # Add diagnostic settings validation
+    $diagSettings = @{
+        "DiagTimeout" = 3600
+        "MaxConcurrentDiags" = 3
+        "DiagWorkingPath" = Join-Path -Path $PSScriptRoot -ChildPath "..\..\temp"
+        "DiagResultsPath" = Join-Path -Path $PSScriptRoot -ChildPath "..\..\results"
+        "AutoCleanupDiags" = $true
+        "DiagCleanupAgeDays" = 7
+        "DiagDefaultParameters" = @{
+            SkipVersionCheck = $false
+            ForceElevated = $true
+            IncludeSystemLogs = $true
+        }
+    }
+    
+    foreach ($key in $diagSettings.Keys) {
+        if (-not $Global:AppSettings.PSObject.Properties.Name -contains $key) {
+            $Global:AppSettings | Add-Member -NotePropertyName $key -NotePropertyValue $diagSettings[$key]
+            Write-Verbose "Added missing diagnostic setting '$key' with default value"
+        }
+    }
 }
 
 function Create-DefaultSettings {
@@ -134,12 +182,24 @@ function Create-DefaultSettings {
         ResultsFontFamily = "Consolas"
         ResultsFontSize = 9
         LogLevelName = "INFO"
+        # Add diagnostic-specific settings
+        DiagTimeout = 3600
+        MaxConcurrentDiags = 3
+        DiagWorkingPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\temp"
+        DiagResultsPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\results"
+        AutoCleanupDiags = $true
+        DiagCleanupAgeDays = 7
+        DiagDefaultParameters = @{
+            SkipVersionCheck = $false
+            ForceElevated = $true
+            IncludeSystemLogs = $true
+        }
     }
     
     # Save default settings
     Save-AppSettings
     
-    Write-Verbose "Created default settings"
+    Write-Verbose "Created default settings including diagnostic configuration"
 }
 
 function Get-AppSetting {
@@ -274,5 +334,28 @@ function Reset-Settings {
     }
 }
 
+function Initialize-DLASettings {
+    Write-Host "Initializing settings..."
+    # Nothing to do yet, settings are initialized when module loads
+    return $true
+}
+
+function Get-DLASetting {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Name
+    )
+    return $script:Settings[$Name]
+}
+
 # Initialize settings when the module is loaded
 Initialize-Settings
+
+Export-ModuleMember -Function Get-AppSettings, 
+                            Get-AppSetting, 
+                            Set-AppSetting, 
+                            Initialize-Settings, 
+                            Save-AppSettings, 
+                            Reset-Settings,
+                            Initialize-DLASettings,
+                            Get-DLASetting

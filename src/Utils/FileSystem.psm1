@@ -2,7 +2,17 @@
 # This module provides file system related functions
 
 # Import dependencies
-. (Join-Path -Path $PSScriptRoot -ChildPath "Logging.ps1")
+try {
+    $loggingPath = Join-Path -Path $PSScriptRoot -ChildPath "Logging.psm1"
+    if (Test-Path $loggingPath) {
+        Import-Module $loggingPath -Force -ErrorAction Stop
+    } else {
+        throw "Logging module not found at: $loggingPath"
+    }
+} catch {
+    Write-Error "Failed to import required module: $_"
+    exit 1
+}
 
 function Test-CabFile {
     param (

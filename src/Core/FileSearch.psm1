@@ -1,10 +1,13 @@
 # DiagLog Analyzer - File Search Module
 # This module handles searching through files for specific text
 
-# Import dependencies
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Logging.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\FileSystem.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Config\Settings.ps1")
+# Import dependencies using relative paths from module root
+$modulePath = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+
+# Import required modules
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Utils\Logging.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Utils\FileSystem.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Config\Settings.psm1") -Force
 
 # Function to search for text in a single file
 function Search-TextInFile {
@@ -308,7 +311,7 @@ function Search-AnalysisResults {
 }
 
 # Function to highlight search text in a string
-function Highlight-SearchText {
+function Format-SearchTextHighlight {
     param (
         [Parameter(Mandatory=$true)]
         [string]$Text,

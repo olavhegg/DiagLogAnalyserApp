@@ -8,8 +8,13 @@ trap {
     Write-Host "Stack Trace: $($_.ScriptStackTrace)" -ForegroundColor Red
     
     # Show error message box if we're in GUI mode
-    if ($null -ne [System.Windows.Forms.Application]::OpenForms -and [System.Windows.Forms.Application]::OpenForms.Count -gt 0) {
-        [System.Windows.Forms.MessageBox]::Show("An unhandled error occurred:`n`n$_`n`nSee the console for more details.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    if ($null -ne [System.Windows.Forms.Application]::OpenForms -and 
+        [System.Windows.Forms.Application]::OpenForms.Count -gt 0) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "An unhandled error occurred:`n`n$_`n`nSee the console for more details.", 
+            "Error", 
+            [System.Windows.Forms.MessageBoxButtons]::OK, 
+            [System.Windows.Forms.MessageBoxIcon]::Error)
     }
     
     Read-Host "Press Enter to exit"
@@ -22,30 +27,43 @@ $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 # Check if we're running as administrator
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
 if (-not $isAdmin) {
-    Write-Host "DiagLog Analyzer is not running with administrator privileges." -ForegroundColor Yellow
-    Write-Host "Some features may not work correctly, especially accessing protected system files." -ForegroundColor Yellow
+    Write-Host "Running without administrator privileges - some features may be limited." -ForegroundColor Yellow
 }
 
 # Import required modules
 try {
     Write-Host "Loading modules..." -ForegroundColor Cyan
     
-    # Load GUI components
-    . (Join-Path -Path $scriptPath -ChildPath "src\GUI\MainForm.ps1")
-    . (Join-Path -Path $scriptPath -ChildPath "src\GUI\Controls.ps1")
+    # Add required .NET assemblies
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    Add-Type -AssemblyName PresentationFramework
     
-    # Load core functionality
-    . (Join-Path -Path $scriptPath -ChildPath "src\Core\Analyzer.ps1")
-    . (Join-Path -Path $scriptPath -ChildPath "src\Core\CabExtractor.ps1")
-    . (Join-Path -Path $scriptPath -ChildPath "src\Core\FileSearch.ps1")
-    
-    # Load utilities
-    . (Join-Path -Path $scriptPath -ChildPath "src\Utils\FileSystem.ps1")
-    . (Join-Path -Path $scriptPath -ChildPath "src\Utils\Logging.ps1")
-    . (Join-Path -Path $scriptPath -ChildPath "src\Utils\Reporting.ps1")
-    
-    # Load configuration
-    . (Join-Path -Path $scriptPath -ChildPath "src\Config\Settings.ps1")
+    # Load required modules
+    $modulesToLoad = @(
+        ".\src\Utils\Logging.ps1",
+        ".\src\GUI\Controls.ps1",  # Ensure Controls.ps1 is loaded early
+        ".\src\Core\Analyzer.ps1",
+        ".\src\Core\CabExtractor.ps1",
+        ".\src\Core\FileSearch.ps1",
+        ".\src\Utils\FileSystem.ps1",
+        ".\src\Utils\Reporting.ps1",
+        ".\src\GUI\Helpers.ps1",
+        ".\src\GUI\EventHandlers.ps1",
+        ".\src\GUI\Panels.ps1",
+        ".\src\GUI\TabControls.ps1",
+        ".\src\GUI\MainWindow.ps1"
+    )
+
+    foreach ($module in $modulesToLoad) {
+        try {
+            . (Join-Path -Path $scriptPath -ChildPath $module)
+            Write-Log "Loaded module: $module" -Level "INFO"
+        } catch {
+            Write-Log "Failed to load module: $module" -Level "ERROR"
+            throw "Failed to load required module: $module"
+        }
+    }
     
     Write-Host "All modules loaded successfully." -ForegroundColor Green
 }
@@ -54,26 +72,23 @@ catch {
     exit 1
 }
 
-# Start the application
-Write-Host "Starting DiagLog Analyzer..." -ForegroundColor Cyan
-
-# Initialize logging
-Initialize-Logging
-
-# Find a valid PowerShell executable path for the icon
-$powerShellPath = if (Test-Path "$PSHOME\powershell.exe") {
-    "$PSHOME\powershell.exe"
-} elseif (Test-Path "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe") {
-    "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-} else {
-    # Fallback to not using an icon
-    $null
-}
-
-# Launch the main form with the corrected path
+# Initialize application
 try {
-    Write-Log -Message "Application started" -Level INFO
-    Show-MainForm -PowerShellPath $powerShellPath
+    # Initialize logging
+    Initialize-Logging
+    Write-Log -Message "Application starting" -Level INFO
+    
+    # Find PowerShell path for icon
+    $powerShellPath = if (Test-Path "$PSHOME\powershell.exe") {
+        "$PSHOME\powershell.exe"
+    } elseif (Test-Path "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe") {
+        "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    } else {
+        $null
+    }
+    
+    # Launch main window
+    Show-MainWindow -PowerShellPath $powerShellPath
 }
 catch {
     Write-Log -Message "Error starting application: $_" -Level ERROR
