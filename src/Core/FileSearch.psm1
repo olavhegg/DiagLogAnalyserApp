@@ -51,6 +51,36 @@ function Search-AnalysisResults {
         
         # Get all files from analysis results
         $allFiles = $AnalysisResults.FileList
+        Write-DLALog -Message "Total files in analysis results: $($allFiles.Count)" -Level INFO -Component "FileSearch"
+        
+        # Check if FileList is empty or null
+        if ($null -eq $allFiles -or $allFiles.Count -eq 0) {
+            Write-DLALog -Message "FileList is empty or null. Checking if we need to use a different property." -Level WARNING -Component "FileSearch"
+            
+            # Try to find files through other means
+            if ($AnalysisResults.PSObject.Properties.Name -contains "Files") {
+                $allFiles = $AnalysisResults.Files
+                Write-DLALog -Message "Using Files property instead. Found $($allFiles.Count) files." -Level INFO -Component "FileSearch"
+            }
+            elseif ($AnalysisResults.PSObject.Properties.Name -contains "AllFiles") {
+                $allFiles = $AnalysisResults.AllFiles
+                Write-DLALog -Message "Using AllFiles property instead. Found $($allFiles.Count) files." -Level INFO -Component "FileSearch"
+            }
+            else {
+                # As a last resort, try to derive a file list from FileTypes
+                Write-DLALog -Message "No explicit file list found. Attempting to reconstruct from available information." -Level WARNING -Component "FileSearch"
+                
+                $reconstructedFiles = @()
+                $rootPath = $AnalysisResults.FolderPath
+                
+                Write-DLALog -Message "Root folder path: $rootPath" -Level INFO -Component "FileSearch"
+                if (Test-Path -Path $rootPath -PathType Container) {
+                    $reconstructedFiles = Get-ChildItem -Path $rootPath -File -Recurse | Select-Object -ExpandProperty FullName
+                    Write-DLALog -Message "Reconstructed file list with $($reconstructedFiles.Count) files." -Level INFO -Component "FileSearch"
+                    $allFiles = $reconstructedFiles
+                }
+            }
+        }
         
         # Filter by extension if specified
         if ($PSBoundParameters.ContainsKey('FileExtensions') -and $FileExtensions.Count -gt 0) {
@@ -66,6 +96,8 @@ function Search-AnalysisResults {
         $totalFiles = $allFiles.Count
         $filesProcessed = 0
         
+        Write-DLALog -Message "Beginning search through $totalFiles files" -Level INFO -Component "FileSearch"
+        
         # Process each file
         foreach ($file in $allFiles) {
             $filesProcessed++
@@ -74,25 +106,298 @@ function Search-AnalysisResults {
             $progressPercent = [Math]::Floor(($filesProcessed / $totalFiles) * 100)
             & $ProgressHandler $progressPercent
             
-            Write-DLALog -Message "Searching file $filesProcessed of $totalFiles : $file" -Level DEBUG -Component "FileSearch"
+            if ($filesProcessed % 50 -eq 0 -or $filesProcessed -eq 1 -or $filesProcessed -eq $totalFiles) {
+                Write-DLALog -Message "Searching file $filesProcessed of $totalFiles" -Level INFO -Component "FileSearch"
+            }
             
-            # Search the file
-            $fileResults = Search-File -FilePath $file -SearchTerms $SearchTerms `
-                -CaseSensitive:$CaseSensitive -UseRegex:$UseRegex -MatchWholeWord:$MatchWholeWord `
-                -ContextLines $ContextLines -ProgressHandler { param($pc) }
+            # First check if file exists
+            if (-not (Test-Path -Path $file -PathType Leaf)) {
+                Write-DLALog -Message "File does not exist, skipping: $file" -Level WARNING -Component "FileSearch"
+                
+                # Add to results with skip status
+                $fileResult = @{
+                    FilePath = $file
+                    FileSize = 0
+                    LastModified = $null
+                    FileType = [System.IO.Path]::GetExtension($file)
+                    MatchCount = 0
+                    Matches = @()
+                    Skipped = $true
+                    SkipReason = "File does not exist"
+                }
+                
+                $searchResults.Results += $fileResult
+                $searchResults.FilesSkipped++
+                continue
+            }
             
-            # Add to results
-            $searchResults.Results += $fileResults
-            $searchResults.FilesSearched++
-            
-            # Update counters
-            if ($fileResults.Skipped) {
+            # Check if it's a binary file - we should implement some basic file type detection
+            try {
+                $fileExt = [System.IO.Path]::GetExtension($file).ToLower()
+                $isBinary = $false
+                
+                # Quick check for common binary extensions
+                $binaryExtensions = @('.exe', '.dll', '.pdb', '.bin', '.cab', '.zip', '.msi', '.sys', '.tmp', '.wim', '.pfx', '.etl')
+                if ($binaryExtensions -contains $fileExt) {
+                    $isBinary = $true
+                }
+                
+                # If binary, add to results with skip status
+                if ($isBinary) {
+                    Write-DLALog -Message "Skipping binary file: $file" -Level DEBUG -Component "FileSearch"
+                    
+                    $fileResult = @{
+                        FilePath = $file
+                        FileSize = (Get-Item -Path $file).Length
+                        LastModified = (Get-Item -Path $file).LastWriteTime
+                        FileType = $fileExt
+                        MatchCount = 0
+                        Matches = @()
+                        Skipped = $true
+                        SkipReason = "Binary file"
+                    }
+                    
+                    $searchResults.Results += $fileResult
+                    $searchResults.FilesSkipped++
+                    continue
+                }
+                
+                # Get file info
+                $fileInfo = Get-Item -Path $file
+                $fileResult = @{
+                    FilePath = $file
+                    FileSize = $fileInfo.Length
+                    LastModified = $fileInfo.LastWriteTime
+                    FileType = $fileExt
+                    MatchCount = 0
+                    Matches = @()
+                    Skipped = $false
+                    SkipReason = $null
+                }
+                
+                # Check if file is too large
+                if ($fileInfo.Length -gt 10MB) {
+                    Write-DLALog -Message "File is large ($(($fileInfo.Length/1MB).ToString('0.00')) MB), might take longer: $file" -Level DEBUG -Component "FileSearch"
+                }
+                
+                # Read file content - implement a more robust approach
+                try {
+                    # First try to read all text
+                    $content = Get-Content -Path $file -Raw -ErrorAction Stop
+                    $lines = $content -split "`r?`n"
+                    
+                    # Search for each term
+                    $matchesFound = 0
+                    $matchDetails = @()
+                    
+                    foreach ($term in $SearchTerms) {
+                        Write-DLALog -Message "Searching for '$term' in $file" -Level DEBUG -Component "FileSearch"
+                        
+                        for ($i = 0; $i -lt $lines.Count; $i++) {
+                            $line = $lines[$i]
+                            $found = $false
+                            
+                            if ($CaseSensitive) {
+                                $found = $line.Contains($term)
+                            } else {
+                                $found = $line.ToLower().Contains($term.ToLower())
+                            }
+                            
+                            if ($found) {
+                                $matchesFound++
+                                
+                                # Get context lines
+                                $contextStart = [Math]::Max(0, $i - $ContextLines)
+                                $contextEnd = [Math]::Min($lines.Count - 1, $i + $ContextLines)
+                                $context = @()
+                                
+                                for ($j = $contextStart; $j -le $contextEnd; $j++) {
+                                    $context += @{
+                                        LineNumber = $j + 1  # Line numbers are 1-based
+                                        Content = $lines[$j]
+                                    }
+                                }
+                                
+                                $matchDetails += @{
+                                    LineNumber = $i + 1  # Line numbers are 1-based
+                                    Line = $line
+                                    Context = $context
+                                    Term = $term
+                                }
+                                
+                                # For large files, don't capture too many matches
+                                if ($matchesFound -ge 100 -and $fileInfo.Length -gt 1MB) {
+                                    Write-DLALog -Message "Many matches found in large file, limiting to 100: $file" -Level WARNING -Component "FileSearch"
+                                    break
+                                }
+                            }
+                        }
+                        
+                        # Limit search to first term if we found too many matches
+                        if ($matchesFound -ge 100 -and $fileInfo.Length -gt 1MB) {
+                            break
+                        }
+                    }
+                    
+                    # Update file result with matches
+                    $fileResult.MatchCount = $matchesFound
+                    $fileResult.Matches = $matchDetails
+                    
+                    # Update search results
+                    if ($matchesFound -gt 0) {
+                        $searchResults.FilesWithMatches++
+                        $searchResults.TotalMatches += $matchesFound
+                        Write-DLALog -Message "Found $matchesFound matches in $file" -Level DEBUG -Component "FileSearch"
+                    }
+                }
+                catch {
+                    Write-DLALog -Message "Error reading file content: $file - $($_.Exception.Message)" -Level ERROR -Component "FileSearch"
+                    
+                    # Update file result with error
+                    $fileResult.Skipped = $true
+                    $fileResult.SkipReason = "Error reading file: $($_.Exception.Message)"
+                    $searchResults.FilesSkipped++
+                }
+                
+                # Add file result to results
+                $searchResults.Results += $fileResult
+                $searchResults.FilesSearched++
+            }
+            catch {
+                Write-DLALog -Message "Error processing file: $file - $($_.Exception.Message)" -Level ERROR -Component "FileSearch"
+                
+                # Add to results with error status
+                $fileResult = @{
+                    FilePath = $file
+                    FileSize = 0
+                    LastModified = $null
+                    FileType = [System.IO.Path]::GetExtension($file)
+                    MatchCount = 0
+                    Matches = @()
+                    Skipped = $true
+                    SkipReason = "Error: $($_.Exception.Message)"
+                }
+                
+                $searchResults.Results += $fileResult
                 $searchResults.FilesSkipped++
             }
-            elseif ($fileResults.MatchCount -gt 0) {
-                $searchResults.FilesWithMatches++
-                $searchResults.TotalMatches += $fileResults.MatchCount
+        }
+        
+        # Simple file search function in case Search-File isn't available
+        function Search-File {
+            param (
+                [Parameter(Mandatory=$true)]
+                [string]$FilePath,
+                
+                [Parameter(Mandatory=$true)]
+                [string[]]$SearchTerms,
+                
+                [Parameter(Mandatory=$false)]
+                [switch]$CaseSensitive,
+                
+                [Parameter(Mandatory=$false)]
+                [switch]$UseRegex,
+                
+                [Parameter(Mandatory=$false)]
+                [switch]$MatchWholeWord,
+                
+                [Parameter(Mandatory=$false)]
+                [int]$ContextLines = 3,
+                
+                [Parameter(Mandatory=$false)]
+                [scriptblock]$ProgressHandler = { param($pc) }
+            )
+            
+            # Default result structure
+            $result = @{
+                FilePath = $FilePath
+                FileSize = 0
+                LastModified = $null
+                FileType = [System.IO.Path]::GetExtension($FilePath)
+                MatchCount = 0
+                Matches = @()
+                Skipped = $false
+                SkipReason = $null
             }
+            
+            try {
+                # Get file info
+                $fileInfo = Get-Item -Path $FilePath
+                $result.FileSize = $fileInfo.Length
+                $result.LastModified = $fileInfo.LastWriteTime
+                
+                # Check if file is too large
+                if ($fileInfo.Length -gt 10MB) {
+                    Write-DLALog -Message "File is large, might take longer: $FilePath" -Level DEBUG -Component "FileSearch"
+                }
+                
+                # Read file content
+                $content = Get-Content -Path $FilePath -Raw -ErrorAction Stop
+                $lines = $content -split "`r?`n"
+                
+                # Search for each term
+                $matchesFound = 0
+                $matchDetails = @()
+                
+                foreach ($term in $SearchTerms) {
+                    for ($i = 0; $i -lt $lines.Count; $i++) {
+                        $line = $lines[$i]
+                        $found = $false
+                        
+                        if ($CaseSensitive) {
+                            $found = $line.Contains($term)
+                        } else {
+                            $found = $line.ToLower().Contains($term.ToLower())
+                        }
+                        
+                        if ($found) {
+                            $matchesFound++
+                            
+                            # Get context lines
+                            $contextStart = [Math]::Max(0, $i - $ContextLines)
+                            $contextEnd = [Math]::Min($lines.Count - 1, $i + $ContextLines)
+                            $context = @()
+                            
+                            for ($j = $contextStart; $j -le $contextEnd; $j++) {
+                                $context += @{
+                                    LineNumber = $j + 1  # Line numbers are 1-based
+                                    Content = $lines[$j]
+                                }
+                            }
+                            
+                            $matchDetails += @{
+                                LineNumber = $i + 1  # Line numbers are 1-based
+                                Line = $line
+                                Context = $context
+                                Term = $term
+                            }
+                            
+                            # For large files, don't capture too many matches
+                            if ($matchesFound -ge 100 -and $fileInfo.Length -gt 1MB) {
+                                break
+                            }
+                        }
+                    }
+                    
+                    # Limit search to first term if we found too many matches
+                    if ($matchesFound -ge 100 -and $fileInfo.Length -gt 1MB) {
+                        break
+                    }
+                }
+                
+                # Update result with matches
+                $result.MatchCount = $matchesFound
+                $result.Matches = $matchDetails
+            }
+            catch {
+                Write-DLALog -Message "Error searching file: $FilePath - $($_.Exception.Message)" -Level ERROR -Component "FileSearch"
+                
+                # Update result with error
+                $result.Skipped = $true
+                $result.SkipReason = "Error: $($_.Exception.Message)"
+            }
+            
+            return $result
         }
         
         # Finalize results
@@ -478,6 +783,7 @@ function New-CsvSearchReport {
                 LineNumber = $match.LineNumber
                 Line = $match.Line
                 FileType = $file.FileType
+                SearchTerm = $match.Term
             }
         }
     }
@@ -486,7 +792,12 @@ function New-CsvSearchReport {
         $matchDetails | Export-Csv -Path $matchesPath -NoTypeInformation
     }
     
-    return $true
+    # Optional: Return an object with all export paths for reference
+    return [PSCustomObject]@{
+        SummaryReport = $summaryPath
+        FileMatchesReport = $OutputPath
+        MatchDetailsReport = $matchesPath
+    }
 }
 
 # Export the functions
