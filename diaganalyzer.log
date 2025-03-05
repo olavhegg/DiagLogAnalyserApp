@@ -1,7 +1,0 @@
-2025-03-05 04:02:50 [ERROR] [Logging] Failed to initialize logging properly: Cannot bind argument to parameter 'Path' because it is an empty string.
-2025-03-05 04:02:50 [INFO] [Launcher] Launching main form...
-2025-03-05 04:02:50 [INFO] [MainForm] Creating main application form
-2025-03-05 04:02:50 [INFO] [AnalysisTab] Creating Analysis tab
-2025-03-05 04:02:50 [INFO] [SearchTab] Creating Search tab
-2025-03-05 04:02:51 [ERROR] [MainForm] Error adding tab pages: The property 'ToolTipText' cannot be found on this object. Verify that the property exists and can be set.
-2025-03-05 04:02:58 [INFO] [MainForm] Application closing

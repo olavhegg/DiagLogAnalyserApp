@@ -123,6 +123,7 @@ function New-AnalysisTab {
     $txtResults = New-Object System.Windows.Forms.TextBox
     $txtResults.Location = New-Object System.Drawing.Point(10, 185)
     $txtResults.Size = New-Object System.Drawing.Size(860, 410)
+    $txtResults.ForeColor = [System.Drawing.Color]::Gray
     $txtResults.Multiline = $true
     $txtResults.ScrollBars = "Both"
     $txtResults.ReadOnly = $true

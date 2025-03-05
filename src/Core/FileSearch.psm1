@@ -619,7 +619,6 @@ function New-HtmlSearchReport {
     return $html
 }
 
-# Function to create a text search report
 function New-TextSearchReport {
     param (
         [Parameter(Mandatory=$true)]
@@ -647,8 +646,9 @@ Total Matches: $($SearchResults.TotalMatches)
 Files Skipped: $($SearchResults.FilesSkipped)
 Search Duration: $(($SearchResults.EndTime - $SearchResults.StartTime).TotalSeconds.ToString('0.00')) seconds
 
+
 Matching Files
--------------
+--------------
 "@
 
     # Add matching files summary
@@ -659,17 +659,22 @@ Matching Files
         $fileSizeKB = [Math]::Round($file.FileSize / 1KB, 2)
         
         $text += @"
+
+==========================================
 File: $fileName
+------------------------------------------
 Path: $($file.FilePath)
 Matches: $($file.MatchCount) | Type: $($file.FileType) | Size: $fileSizeKB KB | Modified: $($file.LastModified)
+==========================================
 
 "@
     }
     
     $text += @"
 
+
 Match Details
-============
+=============
 
 "@
 
@@ -678,10 +683,13 @@ Match Details
         $fileName = Split-Path -Path $file.FilePath -Leaf
         
         $text += @"
+
+=========================================================================
 FILE: $fileName
-===============================
+=========================================================================
 Path: $($file.FilePath)
 Matches: $($file.MatchCount)
+
 
 "@
 
@@ -689,8 +697,10 @@ Matches: $($file.MatchCount)
         if ($file.Matches -and $file.Matches.Count -gt 0) {
             foreach ($match in $file.Matches) {
                 $text += @"
+
+-------------------------------------------------------------------
 Match at line $($match.LineNumber):
--------------------------------
+-------------------------------------------------------------------
 
 "@
 
@@ -714,7 +724,10 @@ Match at line $($match.LineNumber):
             $text += "No detailed match information available.`n"
         }
         
-        $text += "`n-------------------------------`n`n"
+        $text += @"
+=========================================================================
+
+"@
     }
     
     return $text
