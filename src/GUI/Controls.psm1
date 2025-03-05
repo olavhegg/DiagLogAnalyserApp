@@ -149,21 +149,120 @@ function Show-DLADialog {
 
 function New-TabControl {
     $tabControl = New-Object System.Windows.Forms.TabControl
-    $tabControl.Name = "MainTabControl"
     $tabControl.Dock = "Fill"
+    $tabControl.Name = "MainTabControl"
+    
+    # Create and add all tabs
+    $tabControl.TabPages.AddRange(@(
+        (New-AnalysisTab),
+        (New-SearchTab),
+        (New-ResultsTab),
+        (New-SettingsTab)
+    ))
+    
     return $tabControl
 }
 
-function New-StatusStrip {
-    $statusStrip = New-Object System.Windows.Forms.StatusStrip
-    $statusStrip.Name = "StatusStrip"
+function New-AnalysisTab {
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = "Analysis"
+    $tab.Name = "AnalysisTab"
     
+    $panel = New-Object System.Windows.Forms.TableLayoutPanel
+    $panel.Dock = "Fill"
+    $panel.ColumnCount = 2
+    $panel.RowCount = 3
+    
+    # Source folder selection
+    $lblSource = New-Object System.Windows.Forms.Label
+    $lblSource.Text = "Source Folder:"
+    $txtSource = New-Object System.Windows.Forms.TextBox
+    $txtSource.Name = "SourcePath"
+    $btnBrowse = New-Object System.Windows.Forms.Button
+    $btnBrowse.Text = "Browse..."
+    
+    # Analysis options group
+    $groupOptions = New-Object System.Windows.Forms.GroupBox
+    $groupOptions.Text = "Analysis Options"
+    $chkRecursive = New-Object System.Windows.Forms.CheckBox
+    $chkRecursive.Text = "Include Subfolders"
+    $groupOptions.Controls.Add($chkRecursive)
+    
+    # Start button
+    $btnAnalyze = New-Object System.Windows.Forms.Button
+    $btnAnalyze.Text = "Start Analysis"
+    $btnAnalyze.Dock = "Bottom"
+    
+    # Add controls to panel
+    $panel.Controls.AddRange(@($lblSource, $txtSource, $btnBrowse, $groupOptions, $btnAnalyze))
+    $tab.Controls.Add($panel)
+    
+    return $tab
+}
+
+function New-SearchTab {
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = "Search"
+    $tab.Name = "SearchTab"
+    
+    $panel = New-Object System.Windows.Forms.TableLayoutPanel
+    $panel.Dock = "Fill"
+    
+    # Search controls
+    $txtSearch = New-Object System.Windows.Forms.TextBox
+    $txtSearch.Name = "SearchText"
+    $btnSearch = New-Object System.Windows.Forms.Button
+    $btnSearch.Text = "Search"
+    
+    # Results grid
+    $grid = New-Object System.Windows.Forms.DataGridView
+    $grid.Dock = "Fill"
+    $grid.AutoSizeColumnsMode = "Fill"
+    
+    $panel.Controls.AddRange(@($txtSearch, $btnSearch, $grid))
+    $tab.Controls.Add($panel)
+    
+    return $tab
+}
+
+function New-ResultsTab {
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = "Results"
+    $tab.Name = "ResultsTab"
+    
+    $panel = New-Object System.Windows.Forms.TableLayoutPanel
+    $panel.Dock = "Fill"
+    
+    # Results view
+    $resultsView = New-Object System.Windows.Forms.RichTextBox
+    $resultsView.Dock = "Fill"
+    $resultsView.ReadOnly = $true
+    
+    $panel.Controls.Add($resultsView)
+    $tab.Controls.Add($panel)
+    
+    return $tab
+}
+
+function New-SettingsTab {
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = "Settings"
+    $tab.Name = "SettingsTab"
+    
+    $panel = New-Object System.Windows.Forms.PropertyGrid
+    $panel.Dock = "Fill"
+    $tab.Controls.Add($panel)
+    
+    return $tab
+}
+
+function New-StatusStrip {
+    $status = New-Object System.Windows.Forms.StatusStrip
     $statusLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
     $statusLabel.Name = "StatusLabel"
     $statusLabel.Text = "Ready"
-    
-    $statusStrip.Items.Add($statusLabel)
-    return $statusStrip
+    $status.Items.Add($statusLabel)
+    return $status
 }
 
 # Export all the control creation functions

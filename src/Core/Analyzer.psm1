@@ -1,203 +1,250 @@
-# DiagLog Analyzer - Core Analyzer Module
-# This module handles file structure analysis
+# DiagLog Analyzer - Core Analysis Module
+# This module handles the analysis of diagnostic log folders
 
-# Import required modules properly
-$modulesToImport = @(
-    (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Logging.psm1"),
-    (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\FileSystem.psm1")
-)
-
-foreach ($module in $modulesToImport) {
-    Import-Module $module -Force
-}
-
-# Function to analyze folder structure
+# Function to start folder analysis
 function Start-FolderAnalysis {
+    [CmdletBinding()]
     param (
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$FolderPath,
         
+        [Parameter(Mandatory = $false)]
         [switch]$IncludeSubFolders = $true
     )
     
-    Write-Log -Message "Starting folder analysis for $FolderPath" -Level INFO -Component "Analyzer"
-    
-    # Initialize results structure
-    $analysisResults = @{
-        SourcePath = $FolderPath
-        AnalysisTime = Get-Date
-        TotalItems = 0
-        Files = 0
-        Directories = 0
-        TotalSize = 0
-        Extensions = @{}
-        FileTypes = @{}
-        LargestFiles = @()
-        CabFiles = @()
-        DirectoryDepth = 0
-    }
-    
     try {
-        # Get child items based on recursion option
-        $itemParams = @{
-            Path = $FolderPath
-            Force = $true
-            ErrorAction = "SilentlyContinue"
+        Write-DLALog -Message "Starting folder analysis for: $FolderPath" -Level INFO -Component "Analyzer"
+        Write-DLALog -Message "Include subfolders: $IncludeSubFolders" -Level INFO -Component "Analyzer"
+        
+        # Initialize results object
+        $results = [PSCustomObject]@{
+            FolderPath = $FolderPath
+            StartTime = Get-Date
+            EndTime = $null
+            TotalFiles = 0
+            SubfolderCount = 0
+            FileTypes = @{}
+            FilePaths = @()
+            LargeFiles = @()
+            FilesByExtension = @{}
+            DiagnosticFileInfo = @{}
         }
         
+        # Get subfolders if requested
+        $folders = @($FolderPath)
         if ($IncludeSubFolders) {
-            $itemParams.Recurse = $true
+            $subfolders = Get-ChildItem -Path $FolderPath -Directory -Recurse | Select-Object -ExpandProperty FullName
+            $folders += $subfolders
+            $results.SubfolderCount = $subfolders.Count
         }
         
-        $allItems = Get-ChildItem @itemParams
+        Write-DLALog -Message "Found $($results.SubfolderCount) subfolders" -Level INFO -Component "Analyzer"
         
-        # Process items
-        foreach ($item in $allItems) {
-            $analysisResults.TotalItems++
+        # Initialize counters
+        $totalFiles = 0
+        $fileTypes = @{}
+        $filePaths = @()
+        $largeFiles = @()
+        $filesByExtension = @{}
+        
+        # Process each folder
+        foreach ($folder in $folders) {
+            $files = Get-ChildItem -Path $folder -File
             
-            if ($item.PSIsContainer) {
-                $analysisResults.Directories++
+            foreach ($file in $files) {
+                $totalFiles++
+                $filePaths += $file.FullName
                 
-                # Calculate directory depth
-                $relativePath = $item.FullName.Substring($FolderPath.Length)
-                $depth = ($relativePath -replace '[^\\]').Length
-                if ($depth -gt $analysisResults.DirectoryDepth) {
-                    $analysisResults.DirectoryDepth = $depth
-                }
-            }
-            else {
-                $analysisResults.Files++
-                $analysisResults.TotalSize += $item.Length
-                
-                # Process extension
-                $extension = $item.Extension.ToLower()
+                # Track file types (extensions)
+                $extension = $file.Extension.ToLower()
                 if ([string]::IsNullOrEmpty($extension)) {
                     $extension = "(no extension)"
                 }
                 
-                if (-not $analysisResults.Extensions.ContainsKey($extension)) {
-                    $analysisResults.Extensions[$extension] = @{
-                        Count = 0
-                        TotalSize = 0
-                        SampleFiles = @()
+                if ($fileTypes.ContainsKey($extension)) {
+                    $fileTypes[$extension]++
+                }
+                else {
+                    $fileTypes[$extension] = 1
+                }
+                
+                # Group files by extension
+                if (-not $filesByExtension.ContainsKey($extension)) {
+                    $filesByExtension[$extension] = @()
+                }
+                $filesByExtension[$extension] += $file.FullName
+                
+                # Track large files (over 10MB)
+                if ($file.Length -gt 10MB) {
+                    $largeFiles += [PSCustomObject]@{
+                        Path = $file.FullName
+                        Size = $file.Length
+                        SizeInMB = [Math]::Round($file.Length / 1MB, 2)
                     }
                 }
                 
-                $analysisResults.Extensions[$extension].Count++
-                $analysisResults.Extensions[$extension].TotalSize += $item.Length
-                
-                # Keep up to 5 sample files per extension
-                if ($analysisResults.Extensions[$extension].SampleFiles.Count -lt 5) {
-                    $analysisResults.Extensions[$extension].SampleFiles += $item.FullName
-                }
-                
-                # Determine file type
-                $fileType = Get-FileType -FilePath $item.FullName
-                
-                if (-not $analysisResults.FileTypes.ContainsKey($fileType)) {
-                    $analysisResults.FileTypes[$fileType] = @{
-                        Count = 0
-                        TotalSize = 0
+                # Special handling for common diagnostic file types
+                switch ($extension) {
+                    ".log" {
+                        # Process log files
+                        ProcessLogFile -FilePath $file.FullName -Results $results
                     }
-                }
-                
-                $analysisResults.FileTypes[$fileType].Count++
-                $analysisResults.FileTypes[$fileType].TotalSize += $item.Length
-                
-                # Track largest files (keep top 50)
-                $analysisResults.LargestFiles += [PSCustomObject]@{
-                    Path = $item.FullName
-                    Size = $item.Length
-                    Extension = $extension
-                    Type = $fileType
-                }
-                
-                # Keep only top 50 largest files
-                if ($analysisResults.LargestFiles.Count -gt 50) {
-                    $analysisResults.LargestFiles = $analysisResults.LargestFiles | 
-                        Sort-Object -Property Size -Descending | 
-                        Select-Object -First 50
-                }
-                
-                # Check if it's a CAB file
-                if (Test-CabFile -FilePath $item.FullName) {
-                    $analysisResults.CabFiles += [PSCustomObject]@{
-                        Path = $item.FullName
-                        Size = $item.Length
-                        RelativePath = $item.FullName.Substring($FolderPath.Length + 1)
-                        Processed = $false
-                        ExtractedPath = $null
+                    ".evt" {
+                        # Process event files
+                        ProcessEventFile -FilePath $file.FullName -Results $results
+                    }
+                    ".etl" {
+                        # Process ETL files
+                        ProcessEtlFile -FilePath $file.FullName -Results $results
+                    }
+                    ".reg" {
+                        # Process registry files
+                        ProcessRegFile -FilePath $file.FullName -Results $results
                     }
                 }
             }
         }
         
-        Write-Log -Message "Folder analysis completed: $($analysisResults.Files) files, $($analysisResults.Directories) directories" -Level INFO -Component "Analyzer"
-        return $analysisResults
+        # Update results
+        $results.TotalFiles = $totalFiles
+        $results.FileTypes = $fileTypes
+        $results.FilePaths = $filePaths
+        $results.LargeFiles = $largeFiles
+        $results.FilesByExtension = $filesByExtension
+        $results.EndTime = Get-Date
+        
+        # Log success
+        $duration = ($results.EndTime - $results.StartTime).TotalSeconds
+        Write-DLALog -Message "Analysis completed in $duration seconds. Found $totalFiles files." -Level INFO -Component "Analyzer"
+        
+        return $results
     }
     catch {
-        Write-Log -Message "Error during folder analysis: $_" -Level ERROR -Component "Analyzer"
+        Write-DLALog -Message "Error in Start-FolderAnalysis: $_" -Level ERROR -Component "Analyzer"
         throw $_
     }
 }
 
-# Function to get analysis summary as a string
-function Get-AnalysisSummary {
+# Helper function to process log files
+function ProcessLogFile {
     param (
-        [Parameter(Mandatory=$true)]
-        [hashtable]$AnalysisResults
+        [string]$FilePath,
+        [PSCustomObject]$Results
     )
     
-    $summary = @"
-Analysis Summary
----------------
-Source Path: $($AnalysisResults.SourcePath)
-Analysis Time: $($AnalysisResults.AnalysisTime)
-
-Total Items: $($AnalysisResults.TotalItems)
-Files: $($AnalysisResults.Files)
-Directories: $($AnalysisResults.Directories)
-Total Size: $(Format-FileSize -SizeInBytes $AnalysisResults.TotalSize)
-Directory Depth: $($AnalysisResults.DirectoryDepth)
-CAB Files: $($AnalysisResults.CabFiles.Count)
-
-File Extensions:
-$(
-    $AnalysisResults.Extensions.GetEnumerator() | 
-    Sort-Object -Property {$_.Value.Count} -Descending | 
-    ForEach-Object {
-        "  $($_.Key): $($_.Value.Count) files, $(Format-FileSize -SizeInBytes $_.Value.TotalSize)"
-    } | Out-String
-)
-
-File Types:
-$(
-    $AnalysisResults.FileTypes.GetEnumerator() | 
-    Sort-Object -Property {$_.Value.Count} -Descending | 
-    ForEach-Object {
-        "  $($_.Key): $($_.Value.Count) files, $(Format-FileSize -SizeInBytes $_.Value.TotalSize)"
-    } | Out-String
-)
-
-Largest Files:
-$(
-    $AnalysisResults.LargestFiles | 
-    Select-Object -First 10 | 
-    ForEach-Object {
-        "  $(Format-FileSize -SizeInBytes $_.Size): $($_.Path)"
-    } | Out-String
-)
-"@
+    # TODO: Add specific log file processing logic
+    # This is just a placeholder - you would add actual log parsing code here
     
-    return $summary
+    # Add to diagnostic file info if not already tracked
+    if (-not $Results.DiagnosticFileInfo.ContainsKey("LogFiles")) {
+        $Results.DiagnosticFileInfo["LogFiles"] = @()
+    }
+    
+    $Results.DiagnosticFileInfo["LogFiles"] += $FilePath
 }
 
-function Start-LogAnalysis {
-    param(
-        [string]$LogPath
+# Helper function to process event files
+function ProcessEventFile {
+    param (
+        [string]$FilePath,
+        [PSCustomObject]$Results
     )
-    Write-Log "Starting analysis of: $LogPath"
-    # Add analysis logic here
+    
+    # TODO: Add specific event file processing logic
+    
+    # Add to diagnostic file info if not already tracked
+    if (-not $Results.DiagnosticFileInfo.ContainsKey("EventFiles")) {
+        $Results.DiagnosticFileInfo["EventFiles"] = @()
+    }
+    
+    $Results.DiagnosticFileInfo["EventFiles"] += $FilePath
 }
 
-Export-ModuleMember -Function Start-LogAnalysis
+# Helper function to process ETL files
+function ProcessEtlFile {
+    param (
+        [string]$FilePath,
+        [PSCustomObject]$Results
+    )
+    
+    # TODO: Add specific ETL file processing logic
+    
+    # Add to diagnostic file info if not already tracked
+    if (-not $Results.DiagnosticFileInfo.ContainsKey("EtlFiles")) {
+        $Results.DiagnosticFileInfo["EtlFiles"] = @()
+    }
+    
+    $Results.DiagnosticFileInfo["EtlFiles"] += $FilePath
+}
+
+# Helper function to process registry files
+function ProcessRegFile {
+    param (
+        [string]$FilePath,
+        [PSCustomObject]$Results
+    )
+    
+    # TODO: Add specific registry file processing logic
+    
+    # Add to diagnostic file info if not already tracked
+    if (-not $Results.DiagnosticFileInfo.ContainsKey("RegFiles")) {
+        $Results.DiagnosticFileInfo["RegFiles"] = @()
+    }
+    
+    $Results.DiagnosticFileInfo["RegFiles"] += $FilePath
+}
+
+# Function to get analysis summary
+function Get-AnalysisSummary {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject]$AnalysisResults
+    )
+    
+    try {
+        $summary = "Analysis Results for: $($AnalysisResults.FolderPath)`r`n"
+        $summary += "======================================================`r`n`r`n"
+        
+        # Add basic stats
+        $duration = ($AnalysisResults.EndTime - $AnalysisResults.StartTime).TotalSeconds
+        $summary += "Analysis Duration: $([Math]::Round($duration, 2)) seconds`r`n"
+        $summary += "Total Files: $($AnalysisResults.TotalFiles)`r`n"
+        $summary += "Subfolder Count: $($AnalysisResults.SubfolderCount)`r`n`r`n"
+        
+        # Add file types
+        $summary += "File Types Summary:`r`n"
+        $summary += "---------------------`r`n"
+        foreach ($type in $AnalysisResults.FileTypes.Keys | Sort-Object) {
+            $count = $AnalysisResults.FileTypes[$type]
+            $summary += "  $type : $count files`r`n"
+        }
+        
+        # Add large files
+        if ($AnalysisResults.LargeFiles.Count -gt 0) {
+            $summary += "`r`nLarge Files (>10MB):`r`n"
+            $summary += "---------------------`r`n"
+            foreach ($file in $AnalysisResults.LargeFiles | Sort-Object -Property Size -Descending) {
+                $summary += "  $($file.Path) - $($file.SizeInMB) MB`r`n"
+            }
+        }
+        
+        # Add diagnostic file info
+        $summary += "`r`nDiagnostic File Summary:`r`n"
+        $summary += "---------------------`r`n"
+        
+        foreach ($category in $AnalysisResults.DiagnosticFileInfo.Keys | Sort-Object) {
+            $files = $AnalysisResults.DiagnosticFileInfo[$category]
+            $summary += "  $category : $($files.Count) files`r`n"
+        }
+        
+        return $summary
+    }
+    catch {
+        Write-DLALog -Message "Error in Get-AnalysisSummary: $_" -Level ERROR -Component "Analyzer"
+        return "Error generating analysis summary: $_"
+    }
+}
+
+# Export functions
+Export-ModuleMember -Function Start-FolderAnalysis, Get-AnalysisSummary

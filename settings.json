@@ -15,8 +15,19 @@
   "ExtractCabsAutomatically": false,
   "SkipExistingCabExtracts": true,
   "MainFormWidth": 900,
-  "MainFormHeight": 700,
+  "MainFormHeight": 753,
   "ResultsFontFamily": "Consolas",
   "ResultsFontSize": 9,
-  "LogLevelName": "INFO"
+  "LogLevelName": "INFO",
+  "MaxConcurrentDiags": 3,
+  "DiagCleanupAgeDays": 7,
+  "AutoCleanupDiags": true,
+  "DiagResultsPath": "C:\\Users\\OlavHeggelund\\Documents\\DiagLogAnalyserApp\\DiagLogAnalyserApp\\results",
+  "DiagTimeout": 3600,
+  "DiagWorkingPath": "C:\\Users\\OlavHeggelund\\Documents\\DiagLogAnalyserApp\\DiagLogAnalyserApp\\temp",
+  "DiagDefaultParameters": {
+    "IncludeSystemLogs": true,
+    "SkipVersionCheck": false,
+    "ForceElevated": true
+  }
 }

@@ -51,103 +51,118 @@ Write-Host "Code lines collected and stored in $OutputFile"
 --------------------
 
 ### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\Launch-DiagLogAnalyzer.ps1 ###
-# DiagLog Analyzer Launcher
-# This script launches the DiagLog Analyzer application and handles initialization
+# DiagLog Analyzer - Main Launcher Script
 
-# Get script path
-$scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Add required assemblies first
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 
-# Add error handling
-$ErrorActionPreference = "Stop"
-trap {
-    Write-Host "Critical error occurred: $_" -ForegroundColor Red
-    Write-Host "Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
-    
-    # Show an error dialog if possible
-    try {
-        Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.MessageBox]::Show("A critical error occurred:`n`n$_`n`nThe application will now exit.", 
-            "DiagLog Analyzer Error", 
-            [System.Windows.Forms.MessageBoxButtons]::OK, 
-            [System.Windows.Forms.MessageBoxIcon]::Error)
+# Get the root path and ensure it's using Windows path format
+$script:RootPath = $PSScriptRoot
+if (-not $script:RootPath) {
+    $script:RootPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+$script:RootPath = $script:RootPath.Replace('/', '\')
+
+# Create required directories if they don't exist
+$requiredPaths = @(
+    (Join-Path $script:RootPath "logs"),
+    (Join-Path $script:RootPath "results"),
+    (Join-Path $script:RootPath "temp")
+)
+
+foreach ($path in $requiredPaths) {
+    if (-not (Test-Path $path)) {
+        New-Item -Path $path -ItemType Directory -Force | Out-Null
     }
-    catch {
-        # If we can't show a GUI error, at least wait for the user to read the console
-        Write-Host "Press any key to exit..." -ForegroundColor Yellow
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    }
-    
-    exit 1
 }
 
-function Test-Prerequisites {
-    # Check PowerShell version
-    if ($PSVersionTable.PSVersion.Major -lt 5) {
-        throw "DiagLog Analyzer requires PowerShell 5.0 or later. Current version: $($PSVersionTable.PSVersion)"
-    }
+# Module import order is important - define dependencies
+$moduleOrder = @(
+    "src\Config\Settings.psm1",        # Load first - no dependencies
+    "src\Utils\Logging.psm1",          # Depends on Settings
+    "src\Utils\FileSystem.psm1",       # Depends on Logging
+    "src\Core\FileSearch.psm1",        # Depends on FileSystem
+    "src\Core\CabExtractor.psm1",      # Depends on FileSystem
+    "src\Core\Analyzer.psm1",          # Depends on all above
+    "src\GUI\Controls.psm1",           # Depends on Settings
+    "src\GUI\MainForm.psm1"            # Depends on all above
+)
+
+# Import modules in correct order
+foreach ($module in $moduleOrder) {
+    $modulePath = Join-Path -Path $script:RootPath -ChildPath $module
+    Write-Host "Attempting to load module: $modulePath"
     
-    # Check for required modules/assemblies
-    try {
-        Add-Type -AssemblyName System.Windows.Forms
-        Add-Type -AssemblyName System.Drawing
-    }
-    catch {
-        throw "Failed to load required .NET assemblies: $_"
-    }
-    
-    # Check for expand.exe (used for CAB extraction)
-    try {
-        $expandPath = (Get-Command "expand.exe" -ErrorAction SilentlyContinue).Source
-        if (-not $expandPath) {
-            Write-Warning "expand.exe not found in PATH. CAB extraction functionality may be limited."
+    if (Test-Path $modulePath) {
+        try {
+            Import-Module $modulePath -Force -ErrorAction Stop
+            Write-Host "Successfully loaded module: $module" -ForegroundColor Green
+        }
+        catch {
+            Write-Error "Failed to load module $module : $_"
+            exit 1
         }
     }
-    catch {
-        Write-Warning "Failed to check for expand.exe: $_"
-    }
-    
-    # Check for write permissions in the application directory
-    try {
-        $testFile = Join-Path -Path $scriptPath -ChildPath "writetest.tmp"
-        [System.IO.File]::WriteAllText($testFile, "Write test")
-        Remove-Item -Path $testFile -Force
-    }
-    catch {
-        throw "The application doesn't have write permissions in its directory. Please run the application from a location where you have write permissions."
+    else {
+        Write-Error "Required module not found: $modulePath"
+        exit 1
     }
 }
 
-function Start-Application {
-    # Import the main application script
-    try {
-        . (Join-Path -Path $scriptPath -ChildPath "Start-Analysis.ps1")
-    }
-    catch {
-        throw "Failed to load application: $_"
-    }
-}
-
-# Main execution
-Write-Host "DiagLog Analyzer - Starting..." -ForegroundColor Cyan
-
+# Initialize settings and logging
 try {
-    # Check prerequisites
-    Test-Prerequisites
+    # First initialize Settings module
+    if (Get-Command Initialize-DLASettings -ErrorAction SilentlyContinue) {
+        Initialize-DLASettings
+        Write-Host "Settings initialized successfully" -ForegroundColor Green
+    }
+    else {
+        throw "Initialize-DLASettings function not found"
+    }
     
-    # Start the application
-    Start-Application
+    # Then initialize Logging module
+    if (Get-Command Initialize-DLALogging -ErrorAction SilentlyContinue) {
+        Initialize-DLALogging
+        Write-DLALog -Message "Starting DiagLog Analyzer" -Level INFO
+        Write-Host "Logging initialized successfully" -ForegroundColor Green
+    }
+    else {
+        throw "Initialize-DLALogging function not found"
+    }
+    
+    # Launch the main form
+    if (Get-Command Show-MainForm -ErrorAction SilentlyContinue) {
+        Write-Host "Launching main form..." -ForegroundColor Green
+        try {
+            $result = Show-MainForm
+            if (-not $result) {
+                throw "Show-MainForm returned an error status"
+            }
+        }
+        catch {
+            throw "Error in Show-MainForm: $_"
+        }
+    }
+    else {
+        throw "Show-MainForm function not found"
+    }
 }
 catch {
-    Write-Host "Failed to start DiagLog Analyzer: $_" -ForegroundColor Red
+    $errorMsg = "Failed to start DiagLog Analyzer: $_"
     
-    # Show an error dialog
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show("Failed to start DiagLog Analyzer:`n`n$_", 
-        "Startup Error", 
+    # Try to log the error if logging is available
+    if (Get-Command Write-DLALog -ErrorAction SilentlyContinue) {
+        Write-DLALog -Message $errorMsg -Level ERROR
+    }
+    else {
+        Write-Error $errorMsg
+    }
+    
+    # Show UI error message
+    [System.Windows.Forms.MessageBox]::Show($errorMsg, "Error", 
         [System.Windows.Forms.MessageBoxButtons]::OK, 
         [System.Windows.Forms.MessageBoxIcon]::Error)
-    
-    exit 1
 }
 
 --------------------
@@ -267,8 +282,8 @@ MIT License
 {
   "AppName": "DiagLog Analyzer",
   "Version": "1.0.0",
-  "DefaultOutputPath": "C:\\Users\\OlavHeggelund\\Documents\\DiagLogAnalyserApp\\DiagLogAnalyserApp\\src\\Config\\..\\..\\results",
-  "LogPath": ".\\logs",
+  "DefaultOutputPath": "results",
+  "LogPath": "logs",
   "MaxFileSizeForTextSearch": 52428800,
   "DefaultFileTypesToSearch": [
     ".log",
@@ -289,96 +304,40 @@ MIT License
 
 --------------------
 
-### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\Start-Analysis.ps1 ###
-# DiagLog Analyzer
-# Main application script
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\test-Launch.ps1 ###
+# DiagLog Analyzer - Simple Launcher
 
-# Setup error handling
-$ErrorActionPreference = "Stop"
-trap {
-    Write-Host "An error occurred: $_" -ForegroundColor Red
-    Write-Host "Stack Trace: $($_.ScriptStackTrace)" -ForegroundColor Red
-    
-    # Show error message box if we're in GUI mode
-    if ($null -ne [System.Windows.Forms.Application]::OpenForms -and [System.Windows.Forms.Application]::OpenForms.Count -gt 0) {
-        [System.Windows.Forms.MessageBox]::Show("An unhandled error occurred:`n`n$_`n`nSee the console for more details.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    }
-    
-    Read-Host "Press Enter to exit"
-    exit 1
+# Get root path
+$rootPath = $PSScriptRoot
+if (-not $rootPath) {
+    $rootPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 
-# Get script path
-$scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Import just the MainForm module
+$mainFormPath = Join-Path -Path $rootPath -ChildPath "src\GUI\MainForm.psm1"
+Write-Host "Attempting to load module: $mainFormPath"
 
-# Check if we're running as administrator
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
-if (-not $isAdmin) {
-    Write-Host "DiagLog Analyzer is not running with administrator privileges." -ForegroundColor Yellow
-    Write-Host "Some features may not work correctly, especially accessing protected system files." -ForegroundColor Yellow
-}
-
-# Import required modules
 try {
-    Write-Host "Loading modules..." -ForegroundColor Cyan
+    # Force import the module
+    Import-Module $mainFormPath -Force -ErrorAction Stop
+    Write-Host "Successfully loaded MainForm module" -ForegroundColor Green
     
-    # Load GUI components
-    . (Join-Path -Path $scriptPath -ChildPath "src\GUI\MainForm.ps1")
-    . (Join-Path -Path $scriptPath -ChildPath "src\GUI\Controls.ps1")
-    
-    # Load core functionality
-    . (Join-Path -Path $scriptPath -ChildPath "src\Core\Analyzer.ps1")
-    . (Join-Path -Path $scriptPath -ChildPath "src\Core\CabExtractor.ps1")
-    . (Join-Path -Path $scriptPath -ChildPath "src\Core\FileSearch.ps1")
-    
-    # Load utilities
-    . (Join-Path -Path $scriptPath -ChildPath "src\Utils\FileSystem.ps1")
-    . (Join-Path -Path $scriptPath -ChildPath "src\Utils\Logging.ps1")
-    . (Join-Path -Path $scriptPath -ChildPath "src\Utils\Reporting.ps1")
-    
-    # Load configuration
-    . (Join-Path -Path $scriptPath -ChildPath "src\Config\Settings.ps1")
-    
-    Write-Host "All modules loaded successfully." -ForegroundColor Green
+    # Show the form
+    Write-Host "Launching main form..." -ForegroundColor Green
+    $result = Show-MainForm
+    Write-Host "Form result: $result" -ForegroundColor Green
 }
 catch {
-    Write-Host "Failed to load modules: $_" -ForegroundColor Red
-    exit 1
-}
-
-# Start the application
-Write-Host "Starting DiagLog Analyzer..." -ForegroundColor Cyan
-
-# Initialize logging
-Initialize-Logging
-
-# Find a valid PowerShell executable path for the icon
-$powerShellPath = if (Test-Path "$PSHOME\powershell.exe") {
-    "$PSHOME\powershell.exe"
-} elseif (Test-Path "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe") {
-    "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-} else {
-    # Fallback to not using an icon
-    $null
-}
-
-# Launch the main form with the corrected path
-try {
-    Write-Log -Message "Application started" -Level INFO
-    Show-MainForm -PowerShellPath $powerShellPath
-}
-catch {
-    Write-Log -Message "Error starting application: $_" -Level ERROR
-    Write-Host "Error starting application: $_" -ForegroundColor Red
-    exit 1
-}
-finally {
-    Write-Log -Message "Application closed" -Level INFO
+    $errorMsg = "Error: $_"
+    Write-Host $errorMsg -ForegroundColor Red
+    [System.Windows.Forms.MessageBox]::Show($errorMsg, "Error", 
+        [System.Windows.Forms.MessageBoxButtons]::OK, 
+        [System.Windows.Forms.MessageBoxIcon]::Error)
 }
 
 --------------------
 
-### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Config\Settings.ps1 ###
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Config\Settings.psm1 ###
 # DiagLog Analyzer - Settings Management
 # This module handles application settings and configuration
 
@@ -387,6 +346,32 @@ $script:SettingsPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\settings.
 
 # Global variable to store settings
 $Global:AppSettings = $null
+
+$script:Config = @{
+    LogPath = Join-Path $PSScriptRoot "../../logs"
+    MaxLogSize = 10MB
+    DefaultSearchPath = [Environment]::GetFolderPath('MyDocuments')
+    DiagnosticSettings = @{
+        DefaultTimeout = 3600  # 1 hour in seconds
+        MaxConcurrentDiags = 3
+        WorkingDirectory = Join-Path $PSScriptRoot "../../temp"
+        ResultsDirectory = Join-Path $PSScriptRoot "../../results"
+        AutoCleanup = $true
+        CleanupAge = 7  # Days
+    }
+}
+
+# Global settings
+$script:Settings = @{
+    LogPath = Join-Path $PSScriptRoot "..\..\logs\diaganalyzer.log"
+    ResultsPath = Join-Path $PSScriptRoot "..\..\results"
+    TempPath = Join-Path $PSScriptRoot "..\..\temp"
+    LogLevel = "DEBUG"  # DEBUG, INFO, WARN, ERROR
+}
+
+function Get-AppSettings {
+    return $script:Config
+}
 
 function Initialize-Settings {
     # Check if settings file exists
@@ -497,6 +482,28 @@ function Validate-Settings {
             }
         }
     }
+    
+    # Add diagnostic settings validation
+    $diagSettings = @{
+        "DiagTimeout" = 3600
+        "MaxConcurrentDiags" = 3
+        "DiagWorkingPath" = Join-Path -Path $PSScriptRoot -ChildPath "..\..\temp"
+        "DiagResultsPath" = Join-Path -Path $PSScriptRoot -ChildPath "..\..\results"
+        "AutoCleanupDiags" = $true
+        "DiagCleanupAgeDays" = 7
+        "DiagDefaultParameters" = @{
+            SkipVersionCheck = $false
+            ForceElevated = $true
+            IncludeSystemLogs = $true
+        }
+    }
+    
+    foreach ($key in $diagSettings.Keys) {
+        if (-not $Global:AppSettings.PSObject.Properties.Name -contains $key) {
+            $Global:AppSettings | Add-Member -NotePropertyName $key -NotePropertyValue $diagSettings[$key]
+            Write-Verbose "Added missing diagnostic setting '$key' with default value"
+        }
+    }
 }
 
 function Create-DefaultSettings {
@@ -515,12 +522,24 @@ function Create-DefaultSettings {
         ResultsFontFamily = "Consolas"
         ResultsFontSize = 9
         LogLevelName = "INFO"
+        # Add diagnostic-specific settings
+        DiagTimeout = 3600
+        MaxConcurrentDiags = 3
+        DiagWorkingPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\temp"
+        DiagResultsPath = Join-Path -Path $PSScriptRoot -ChildPath "..\..\results"
+        AutoCleanupDiags = $true
+        DiagCleanupAgeDays = 7
+        DiagDefaultParameters = @{
+            SkipVersionCheck = $false
+            ForceElevated = $true
+            IncludeSystemLogs = $true
+        }
     }
     
     # Save default settings
     Save-AppSettings
     
-    Write-Verbose "Created default settings"
+    Write-Verbose "Created default settings including diagnostic configuration"
 }
 
 function Get-AppSetting {
@@ -655,18 +674,48 @@ function Reset-Settings {
     }
 }
 
+function Initialize-DLASettings {
+    Write-Host "Initializing settings..."
+    # Nothing to do yet, settings are initialized when module loads
+    return $true
+}
+
+function Get-DLASetting {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Name
+    )
+    return $script:Settings[$Name]
+}
+
 # Initialize settings when the module is loaded
 Initialize-Settings
 
+Export-ModuleMember -Function Get-AppSettings, 
+                            Get-AppSetting, 
+                            Set-AppSetting, 
+                            Initialize-Settings, 
+                            Save-AppSettings, 
+                            Reset-Settings,
+                            Initialize-DLASettings,
+                            Get-DLASetting
+
 --------------------
 
-### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Core\Analyzer.ps1 ###
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Core\Analyzer.psm1 ###
 # DiagLog Analyzer - Core Analyzer Module
 # This module handles file structure analysis
 
-# Import dependencies
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Logging.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\FileSystem.ps1")
+# Import required modules properly
+$modulePath = Split-Path -Parent $PSScriptRoot
+$modulesToImport = @(
+    (Join-Path -Path $modulePath -ChildPath "Utils\Logging.psm1"),
+    (Join-Path -Path $modulePath -ChildPath "Utils\FileSystem.psm1")
+)
+
+foreach ($module in $modulesToImport) {
+    Import-Module $module -Force
+}
 
 # Function to analyze folder structure
 function Start-FolderAnalysis {
@@ -677,7 +726,7 @@ function Start-FolderAnalysis {
         [switch]$IncludeSubFolders = $true
     )
     
-    Write-Log -Message "Starting folder analysis for $FolderPath" -Level INFO -Component "Analyzer"
+    Write-DLALog -Message "Starting folder analysis for $FolderPath" -Level INFO -Component "Analyzer"
     
     # Initialize results structure
     $analysisResults = @{
@@ -761,19 +810,12 @@ function Start-FolderAnalysis {
                 $analysisResults.FileTypes[$fileType].Count++
                 $analysisResults.FileTypes[$fileType].TotalSize += $item.Length
                 
-                # Track largest files (keep top 50)
+                # Track all files in the analysis
                 $analysisResults.LargestFiles += [PSCustomObject]@{
                     Path = $item.FullName
                     Size = $item.Length
                     Extension = $extension
                     Type = $fileType
-                }
-                
-                # Keep only top 50 largest files
-                if ($analysisResults.LargestFiles.Count -gt 50) {
-                    $analysisResults.LargestFiles = $analysisResults.LargestFiles | 
-                        Sort-Object -Property Size -Descending | 
-                        Select-Object -First 50
                 }
                 
                 # Check if it's a CAB file
@@ -789,11 +831,11 @@ function Start-FolderAnalysis {
             }
         }
         
-        Write-Log -Message "Folder analysis completed: $($analysisResults.Files) files, $($analysisResults.Directories) directories" -Level INFO -Component "Analyzer"
+        Write-DLALog -Message "Folder analysis completed: $($analysisResults.Files) files, $($analysisResults.Directories) directories" -Level INFO -Component "Analyzer"
         return $analysisResults
     }
     catch {
-        Write-Log -Message "Error during folder analysis: $_" -Level ERROR -Component "Analyzer"
+        Write-DLALog -Message "Error during folder analysis: $_" -Level ERROR -Component "Analyzer"
         throw $_
     }
 }
@@ -849,16 +891,30 @@ $(
     return $summary
 }
 
+function Start-LogAnalysis {
+    param(
+        [string]$LogPath
+    )
+    Write-DLALog -Message "Starting analysis of: $LogPath" -Level INFO
+    # Add analysis logic here
+}
+
+# Export functions
+Export-ModuleMember -Function Start-LogAnalysis, Start-FolderAnalysis, Get-AnalysisSummary
+
 --------------------
 
-### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Core\CabExtractor.ps1 ###
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Core\CabExtractor.psm1 ###
 # DiagLog Analyzer - CAB Extractor Module
 # This module handles extraction of CAB files
 
-# Import dependencies
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Logging.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\FileSystem.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Config\Settings.ps1")
+# Import dependencies using relative paths from module root
+$modulePath = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+
+# Import required modules
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Utils\Logging.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Utils\FileSystem.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Config\Settings.psm1") -Force
 
 # Function to extract a single CAB file
 function Expand-CabFile {
@@ -869,27 +925,36 @@ function Expand-CabFile {
         [Parameter(Mandatory=$false)]
         [string]$DestinationPath = $null,
         
-        [switch]$SkipIfExists = $true
+        [switch]$SkipIfExists = $true,
+        
+        [switch]$ValidateExtraction = $true,
+        
+        [switch]$CleanupOnFailure = $true
     )
     
     try {
-        # Verify the cab file exists
-        if (-not (Test-Path -Path $CabFilePath)) {
-            Write-Log -Message "CAB file not found: $CabFilePath" -Level ERROR -Component "CabExtractor"
-            return [PSCustomObject]@{
-                Success = $false
-                CabPath = $CabFilePath
-                ExtractedPath = $null
-                Message = "CAB file not found"
-            }
+        # Verify the cab file exists and is valid
+        if (-not (Test-Path -Path $CabFilePath -PathType Leaf)) {
+            throw "CAB file not found or is not a file: $CabFilePath"
         }
-        
+
+        # Verify file extension
+        if ([System.IO.Path]::GetExtension($CabFilePath) -ne '.cab') {
+            throw "File is not a CAB file: $CabFilePath"
+        }
+
         # Create destination path if not specified
         if ([string]::IsNullOrEmpty($DestinationPath)) {
             $cabFileName = [System.IO.Path]::GetFileName($CabFilePath)
             $cabDirectory = [System.IO.Path]::GetDirectoryName($CabFilePath)
             $extractFolderName = [System.IO.Path]::GetFileNameWithoutExtension($cabFileName)
             $DestinationPath = Join-Path -Path $cabDirectory -ChildPath "$extractFolderName"
+        }
+        
+        # Get expected contents before extraction
+        $expectedContents = Get-CabContents -CabFilePath $CabFilePath
+        if ($null -eq $expectedContents) {
+            throw "Failed to read CAB contents"
         }
         
         # Check if destination already exists
@@ -900,46 +965,62 @@ function Expand-CabFile {
                 CabPath = $CabFilePath
                 ExtractedPath = $DestinationPath
                 Message = "Extraction skipped, folder already exists"
+                Files = $expectedContents
             }
         }
         
         # Create the destination directory
-        if (-not (Test-Path -Path $DestinationPath)) {
-            New-Item -Path $DestinationPath -ItemType Directory -Force | Out-Null
-        }
+        New-Item -Path $DestinationPath -ItemType Directory -Force | Out-Null
         
         Write-Log -Message "Extracting CAB file: $CabFilePath to $DestinationPath" -Level INFO -Component "CabExtractor"
         
-        # Use expand.exe to extract CAB files (native Windows tool)
+        # Use expand.exe with better output capture
         $expandCmd = "expand.exe -F:* `"$CabFilePath`" `"$DestinationPath`""
-        $result = Start-Process -FilePath "cmd.exe" -ArgumentList "/c $expandCmd" -NoNewWindow -Wait -PassThru
+        $output = & cmd.exe /c $expandCmd 2>&1
+        $exitCode = $LASTEXITCODE
         
-        if ($result.ExitCode -eq 0) {
+        if ($exitCode -eq 0) {
+            if ($ValidateExtraction) {
+                # Verify extracted files
+                $extractedFiles = Get-ChildItem -Path $DestinationPath -Recurse -File
+                $missingFiles = $expectedContents | Where-Object {
+                    -not (Test-Path (Join-Path -Path $DestinationPath -ChildPath $_.Name))
+                }
+                
+                if ($missingFiles) {
+                    throw "Extraction validation failed. Missing files: $($missingFiles.Name -join ', ')"
+                }
+            }
+            
             Write-Log -Message "CAB extraction completed successfully: $CabFilePath" -Level INFO -Component "CabExtractor"
             return [PSCustomObject]@{
                 Success = $true
                 CabPath = $CabFilePath
                 ExtractedPath = $DestinationPath
                 Message = "Extraction successful"
+                Files = $expectedContents
+                Output = $output
             }
         }
         else {
-            Write-Log -Message "CAB extraction failed with exit code $($result.ExitCode): $CabFilePath" -Level ERROR -Component "CabExtractor"
-            return [PSCustomObject]@{
-                Success = $false
-                CabPath = $CabFilePath
-                ExtractedPath = $null
-                Message = "Extraction failed with exit code: $($result.ExitCode)"
-            }
+            throw "Expand.exe failed with exit code $exitCode. Output: $($output -join "`n")"
         }
     }
     catch {
         Write-Log -Message "Exception during CAB extraction: $_" -Level ERROR -Component "CabExtractor"
+        
+        # Cleanup on failure if requested
+        if ($CleanupOnFailure -and (Test-Path -Path $DestinationPath)) {
+            Write-Log -Message "Cleaning up failed extraction directory: $DestinationPath" -Level INFO -Component "CabExtractor"
+            Remove-Item -Path $DestinationPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        
         return [PSCustomObject]@{
             Success = $false
             CabPath = $CabFilePath
             ExtractedPath = $null
             Message = "Exception: $_"
+            Output = $output
         }
     }
 }
@@ -1005,27 +1086,36 @@ function Get-CabContents {
     
     try {
         # Verify the cab file exists
-        if (-not (Test-Path -Path $CabFilePath)) {
-            Write-Log -Message "CAB file not found: $CabFilePath" -Level ERROR -Component "CabExtractor"
-            return $null
+        if (-not (Test-Path -Path $CabFilePath -PathType Leaf)) {
+            throw "CAB file not found or is not a file: $CabFilePath"
         }
         
-        Write-Log -Message "Listing CAB file contents: $CabFilePath" -Level INFO -Component "CabExtractor"
+        Write-Log -Message "Listing CAB file contents: $CabFilePath" -Level DEBUG -Component "CabExtractor"
         
         # Use expand.exe with -D option to list contents
         $expandCmd = "expand.exe -D `"$CabFilePath`""
         $output = & cmd.exe /c $expandCmd 2>&1
         
-        # Parse the output to extract file listing
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to list CAB contents. Exit code: $LASTEXITCODE. Output: $($output -join "`n")"
+        }
+        
+        # Parse the output to extract file listing with improved regex
         $files = @()
         foreach ($line in $output) {
             if ($line -match '^\s*(.+?)\s+(\d+)\s*$') {
                 $fileName = $matches[1].Trim()
                 $fileSize = [int]$matches[2]
                 
+                # Skip if fileName is empty or contains only whitespace
+                if ([string]::IsNullOrWhiteSpace($fileName)) {
+                    continue
+                }
+                
                 $files += [PSCustomObject]@{
                     Name = $fileName
                     Size = $fileSize
+                    Path = $fileName # Full path within the CAB
                 }
             }
         }
@@ -1040,14 +1130,17 @@ function Get-CabContents {
 
 --------------------
 
-### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Core\FileSearch.ps1 ###
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Core\FileSearch.psm1 ###
 # DiagLog Analyzer - File Search Module
 # This module handles searching through files for specific text
 
-# Import dependencies
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Logging.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\FileSystem.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Config\Settings.ps1")
+# Import dependencies using relative paths from module root
+$modulePath = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+
+# Import required modules
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Utils\Logging.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Utils\FileSystem.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "src\Config\Settings.psm1") -Force
 
 # Function to search for text in a single file
 function Search-TextInFile {
@@ -1351,7 +1444,7 @@ function Search-AnalysisResults {
 }
 
 # Function to highlight search text in a string
-function Highlight-SearchText {
+function Format-SearchTextHighlight {
     param (
         [Parameter(Mandatory=$true)]
         [string]$Text,
@@ -1383,1700 +1476,769 @@ function Highlight-SearchText {
 
 --------------------
 
-### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\GUI\Controls.ps1 ###
-# DiagLog Analyzer - Custom Controls
-# This file contains custom control definitions and extensions
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\GUI\Controls.psm1 ###
+# DiagLog Analyzer - GUI Controls Module
+# This module provides common GUI controls with consistent styling
 
-# No custom controls defined yet, placeholder for future expansion
+# Import required assemblies
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 
-# Function to create a progress dialog
-function Show-ProgressDialog {
-    param(
+# Import required modules
+$settingsModule = Join-Path -Path $PSScriptRoot -ChildPath "..\Config\Settings.psm1"
+Import-Module $settingsModule -Force
+
+function New-DLAButton {
+    param (
         [Parameter(Mandatory=$true)]
-        [string]$Title,
+        [string]$Text,
         
+        [int]$Width = 100,
+        [int]$Height = 30,
+        [int]$X = 0,
+        [int]$Y = 0,
+        
+        [scriptblock]$OnClick
+    )
+    
+    $button = New-Object System.Windows.Forms.Button
+    $button.Text = $Text
+    $button.Size = New-Object System.Drawing.Size($Width, $Height)
+    $button.Location = New-Object System.Drawing.Point($X, $Y)
+    $button.UseVisualStyleBackColor = $true
+    
+    if ($OnClick) {
+        $button.Add_Click($OnClick)
+    }
+    
+    return $button
+}
+
+function New-DLATextBox {
+    param (
+        [string]$Text = "",
+        [int]$Width = 200,
+        [int]$Height = 20,
+        [int]$X = 0,
+        [int]$Y = 0,
+        [switch]$Multiline,
+        [switch]$ReadOnly
+    )
+    
+    $textBox = New-Object System.Windows.Forms.TextBox
+    $textBox.Text = $Text
+    $textBox.Size = New-Object System.Drawing.Size($Width, $Height)
+    $textBox.Location = New-Object System.Drawing.Point($X, $Y)
+    $textBox.Multiline = $Multiline
+    $textBox.ReadOnly = $ReadOnly
+    
+    if ($Multiline) {
+        $textBox.ScrollBars = "Vertical"
+    }
+    
+    return $textBox
+}
+
+function New-DLALabel {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Text,
+        
+        [int]$Width = 100,
+        [int]$Height = 20,
+        [int]$X = 0,
+        [int]$Y = 0
+    )
+    
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $Text
+    $label.Size = New-Object System.Drawing.Size($Width, $Height)
+    $label.Location = New-Object System.Drawing.Point($X, $Y)
+    $label.AutoSize = $true
+    
+    return $label
+}
+
+function New-DLAProgressBar {
+    param (
+        [int]$Width = 200,
+        [int]$Height = 20,
+        [int]$X = 0,
+        [int]$Y = 0,
+        [int]$Minimum = 0,
+        [int]$Maximum = 100
+    )
+    
+    $progressBar = New-Object System.Windows.Forms.ProgressBar
+    $progressBar.Size = New-Object System.Drawing.Size($Width, $Height)
+    $progressBar.Location = New-Object System.Drawing.Point($X, $Y)
+    $progressBar.Minimum = $Minimum
+    $progressBar.Maximum = $Maximum
+    $progressBar.Style = "Continuous"
+    
+    return $progressBar
+}
+
+function New-DLAListView {
+    param (
+        [int]$Width = 400,
+        [int]$Height = 300,
+        [int]$X = 0,
+        [int]$Y = 0,
+        [string[]]$Columns
+    )
+    
+    $listView = New-Object System.Windows.Forms.ListView
+    $listView.Size = New-Object System.Drawing.Size($Width, $Height)
+    $listView.Location = New-Object System.Drawing.Point($X, $Y)
+    $listView.View = [System.Windows.Forms.View]::Details
+    $listView.FullRowSelect = $true
+    $listView.GridLines = $true
+    
+    if ($Columns) {
+        foreach ($col in $Columns) {
+            $listView.Columns.Add($col) | Out-Null
+        }
+        $listView.Columns | ForEach-Object { $_.Width = ($Width - 25) / $Columns.Count }
+    }
+    
+    return $listView
+}
+
+function Show-DLADialog {
+    param (
         [Parameter(Mandatory=$true)]
         [string]$Message,
         
-        [Parameter(Mandatory=$true)]
-        [scriptblock]$ScriptBlock,
-        
-        [object[]]$ArgumentList = @()
+        [string]$Title = "DiagLog Analyzer",
+        [ValidateSet("Info", "Warning", "Error", "Question")]
+        [string]$Type = "Info"
     )
     
-    # Create form
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = $Title
-    $form.Size = New-Object System.Drawing.Size(400, 150)
-    $form.StartPosition = "CenterScreen"
-    $form.FormBorderStyle = "FixedDialog"
-    $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
-    
-    # Create message label
-    $label = New-Object System.Windows.Forms.Label
-    $label.Location = New-Object System.Drawing.Point(10, 20)
-    $label.Size = New-Object System.Drawing.Size(370, 40)
-    $label.Text = $Message
-    $form.Controls.Add($label)
-    
-    # Create progress bar
-    $progressBar = New-Object System.Windows.Forms.ProgressBar
-    $progressBar.Location = New-Object System.Drawing.Point(10, 70)
-    $progressBar.Size = New-Object System.Drawing.Size(370, 20)
-    $progressBar.Style = "Marquee"
-    $progressBar.MarqueeAnimationSpeed = 20
-    $form.Controls.Add($progressBar)
-    
-    # Run the script on a background thread
-    $result = $null
-    $error1 = $null
-    
-    $thread = [System.Threading.Thread]::new({
-        try {
-            $result = & $ScriptBlock @ArgumentList
-        }
-        catch {
-            $error1 = $_
-        }
-        finally {
-            $form.Invoke([Action]{$form.Close()})
-        }
-    })
-    
-    # Start thread and show form
-    $thread.Start()
-    [void]$form.ShowDialog()
-    
-    # Return result
-    if ($null -ne $error1) {
-        throw $error1
+    $icon = switch ($Type) {
+        "Info" { [System.Windows.Forms.MessageBoxIcon]::Information }
+        "Warning" { [System.Windows.Forms.MessageBoxIcon]::Warning }
+        "Error" { [System.Windows.Forms.MessageBoxIcon]::Error }
+        "Question" { [System.Windows.Forms.MessageBoxIcon]::Question }
     }
     
-    return $result
+    return [System.Windows.Forms.MessageBox]::Show($Message, $Title, 
+        [System.Windows.Forms.MessageBoxButtons]::OK, $icon)
 }
 
-# Function to show a custom file picker
-function Show-FilePicker {
-    param(
-        [string]$Title = "Select Files",
-        [string]$Filter = "All Files (*.*)|*.*",
-        [string]$InitialDirectory = [Environment]::GetFolderPath("MyDocuments"),
-        [switch]$Multiselect = $false
-    )
-    
-    $dialog = New-Object System.Windows.Forms.OpenFileDialog
-    $dialog.Title = $Title
-    $dialog.Filter = $Filter
-    $dialog.InitialDirectory = $InitialDirectory
-    $dialog.Multiselect = $Multiselect
-    
-    if ($dialog.ShowDialog() -eq 'OK') {
-        if ($Multiselect) {
-            return $dialog.FileNames
-        }
-        else {
-            return $dialog.FileName
-        }
-    }
-    
-    return $null
-}
-
-# Function to show a folder picker dialog
-function Show-FolderPicker {
-    param(
-        [string]$Description = "Select Folder",
-        [string]$InitialDirectory = $null,
-        [switch]$ShowNewFolderButton = $true
-    )
-    
-    try {
-        # Create the folder browser dialog
-        $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-        $folderBrowser.Description = $Description
-        $folderBrowser.ShowNewFolderButton = $ShowNewFolderButton
-        
-        # Set initial directory with better null handling
-        if (-not [string]::IsNullOrEmpty($InitialDirectory) -and 
-            (Test-Path -Path $InitialDirectory -ErrorAction SilentlyContinue)) {
-            $folderBrowser.SelectedPath = $InitialDirectory
-        }
-        
-        # Show dialog and handle result
-        if ($folderBrowser.ShowDialog() -eq 'OK') {
-            # Double-check that we have a valid path
-            if (-not [string]::IsNullOrEmpty($folderBrowser.SelectedPath) -and 
-                (Test-Path -Path $folderBrowser.SelectedPath -ErrorAction SilentlyContinue)) {
-                return $folderBrowser.SelectedPath
-            }
-        }
-        
-        return $null
-    }
-    catch {
-        Write-Warning "Error in folder picker: $_"
-        return $null
-    }
-}
-
-# Extension method to create a simple context menu for text boxes
-function Add-TextBoxContextMenu {
-    param(
-        [Parameter(Mandatory=$true)]
-        [System.Windows.Forms.TextBox]$TextBox
-    )
-    
-    $contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
-    
-    $copyMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
-    $copyMenuItem.Text = "Copy"
-    $copyMenuItem.ShortcutKeys = [System.Windows.Forms.Keys]::Control -bor [System.Windows.Forms.Keys]::C
-    $copyMenuItem.Add_Click({ $TextBox.Copy() })
-    $contextMenu.Items.Add($copyMenuItem)
-    
-    $selectAllMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
-    $selectAllMenuItem.Text = "Select All"
-    $selectAllMenuItem.ShortcutKeys = [System.Windows.Forms.Keys]::Control -bor [System.Windows.Forms.Keys]::A
-    $selectAllMenuItem.Add_Click({ $TextBox.SelectAll() })
-    $contextMenu.Items.Add($selectAllMenuItem)
-    
-    if (-not $TextBox.ReadOnly) {
-        $cutMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
-        $cutMenuItem.Text = "Cut"
-        $cutMenuItem.ShortcutKeys = [System.Windows.Forms.Keys]::Control -bor [System.Windows.Forms.Keys]::X
-        $cutMenuItem.Add_Click({ $TextBox.Cut() })
-        $contextMenu.Items.Insert(0, $cutMenuItem)
-        
-        $pasteMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
-        $pasteMenuItem.Text = "Paste"
-        $pasteMenuItem.ShortcutKeys = [System.Windows.Forms.Keys]::Control -bor [System.Windows.Forms.Keys]::V
-        $pasteMenuItem.Add_Click({ $TextBox.Paste() })
-        $contextMenu.Items.Add($pasteMenuItem)
-    }
-    
-    $TextBox.ContextMenuStrip = $contextMenu
-}
-
---------------------
-
-### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\GUI\MainForm.ps1 ###
-# DiagLog Analyzer - Main Form
-# This file contains the main application window and UI logic
-
-# Import dependencies
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName PresentationFramework
-
-# Import modules
-. (Join-Path -Path $PSScriptRoot -ChildPath "Controls.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Logging.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\FileSystem.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Core\Analyzer.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Core\CabExtractor.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Core\FileSearch.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Reporting.ps1")
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Config\Settings.ps1")
-
-# Global variables
-$script:AnalysisResults = $null
-$script:MainForm = $null
-
-function Show-MainForm {
-    param(
-        [string]$PowerShellPath = "$PSHOME\powershell.exe"
-    )
-    
-    # Create the main form
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = "DiagLog Analyzer"
-    $form.Size = New-Object System.Drawing.Size ((Get-AppSetting -Name "MainFormWidth"), (Get-AppSetting -Name "MainFormHeight"))
-    $form.StartPosition = "CenterScreen"
-    
-    # Try to set the icon if the path exists
-    if ($PowerShellPath -and (Test-Path $PowerShellPath)) {
-        try {
-            $form.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($PowerShellPath)
-        } catch {
-            Write-Log -Message "Could not load icon from $PowerShellPath : $_" -Level WARNING -Component "GUI"
-            # Continue without an icon
-        }
-    }
-    
-    
-    # Store reference to the form
-    $script:MainForm = $form
-    
-    # Create tab control for main sections
+function New-TabControl {
     $tabControl = New-Object System.Windows.Forms.TabControl
     $tabControl.Dock = "Fill"
     $tabControl.Name = "MainTabControl"
     
-    # Create tabs
-    $tabAnalysis = New-Object System.Windows.Forms.TabPage
-    $tabAnalysis.Text = "Analysis"
-    $tabAnalysis.Name = "AnalysisTab"
+    # Create and add all tabs
+    $tabControl.TabPages.AddRange(@(
+        (New-AnalysisTab),
+        (New-SearchTab),
+        (New-ResultsTab),
+        (New-SettingsTab)
+    ))
     
-    $tabSearch = New-Object System.Windows.Forms.TabPage
-    $tabSearch.Text = "Search"
-    $tabSearch.Name = "SearchTab"
-    $tabSearch.Enabled = $false # Disabled until analysis is complete
-    
-    $tabExtract = New-Object System.Windows.Forms.TabPage
-    $tabExtract.Text = "CAB Extraction"
-    $tabExtract.Name = "ExtractTab"
-    $tabExtract.Enabled = $false # Disabled until analysis is complete
-    
-    $tabSettings = New-Object System.Windows.Forms.TabPage
-    $tabSettings.Text = "Settings"
-    $tabSettings.Name = "SettingsTab"
-    
-    $tabAbout = New-Object System.Windows.Forms.TabPage
-    $tabAbout.Text = "About"
-    $tabAbout.Name = "AboutTab"
-    
-    # Add tabs to tab control
-    $tabControl.TabPages.Add($tabAnalysis)
-    $tabControl.TabPages.Add($tabSearch)
-    $tabControl.TabPages.Add($tabExtract)
-    $tabControl.TabPages.Add($tabSettings)
-    $tabControl.TabPages.Add($tabAbout)
-    
-    # Add tab control to form
-    $form.Controls.Add($tabControl)
-    
-    # Create status strip for messages
-    $statusStrip = New-Object System.Windows.Forms.StatusStrip
-    $statusLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
-    $statusLabel.Text = "Ready"
-    $statusLabel.Name = "StatusLabel"
-    $statusStrip.Items.Add($statusLabel)
-    $form.Controls.Add($statusStrip)
-    
-    # Setup tab contents
-    Setup-AnalysisTab -TabPage $tabAnalysis
-    Setup-SearchTab -TabPage $tabSearch
-    Setup-ExtractTab -TabPage $tabExtract
-    Setup-SettingsTab -TabPage $tabSettings
-    Setup-AboutTab -TabPage $tabAbout
-    
-    # Set form close event
-    $form.Add_FormClosing({
-        # Save settings before closing
-        Save-AppSettings
-    })
-    
-    # Show the form
-    [void]$form.ShowDialog()
+    return $tabControl
 }
 
-function Setup-AnalysisTab {
+function New-AnalysisTab {
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = "Analysis"
+    $tab.Name = "AnalysisTab"
+    
+    $panel = New-Object System.Windows.Forms.TableLayoutPanel
+    $panel.Dock = "Fill"
+    $panel.ColumnCount = 2
+    $panel.RowCount = 3
+    
+    # Source folder selection
+    $lblSource = New-Object System.Windows.Forms.Label
+    $lblSource.Text = "Source Folder:"
+    $txtSource = New-Object System.Windows.Forms.TextBox
+    $txtSource.Name = "SourcePath"
+    $btnBrowse = New-Object System.Windows.Forms.Button
+    $btnBrowse.Text = "Browse..."
+    
+    # Analysis options group
+    $groupOptions = New-Object System.Windows.Forms.GroupBox
+    $groupOptions.Text = "Analysis Options"
+    $chkRecursive = New-Object System.Windows.Forms.CheckBox
+    $chkRecursive.Text = "Include Subfolders"
+    $groupOptions.Controls.Add($chkRecursive)
+    
+    # Start button
+    $btnAnalyze = New-Object System.Windows.Forms.Button
+    $btnAnalyze.Text = "Start Analysis"
+    $btnAnalyze.Dock = "Bottom"
+    
+    # Add controls to panel
+    $panel.Controls.AddRange(@($lblSource, $txtSource, $btnBrowse, $groupOptions, $btnAnalyze))
+    $tab.Controls.Add($panel)
+    
+    return $tab
+}
+
+function New-SearchTab {
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = "Search"
+    $tab.Name = "SearchTab"
+    
+    $panel = New-Object System.Windows.Forms.TableLayoutPanel
+    $panel.Dock = "Fill"
+    
+    # Search controls
+    $txtSearch = New-Object System.Windows.Forms.TextBox
+    $txtSearch.Name = "SearchText"
+    $btnSearch = New-Object System.Windows.Forms.Button
+    $btnSearch.Text = "Search"
+    
+    # Results grid
+    $grid = New-Object System.Windows.Forms.DataGridView
+    $grid.Dock = "Fill"
+    $grid.AutoSizeColumnsMode = "Fill"
+    
+    $panel.Controls.AddRange(@($txtSearch, $btnSearch, $grid))
+    $tab.Controls.Add($panel)
+    
+    return $tab
+}
+
+function New-ResultsTab {
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = "Results"
+    $tab.Name = "ResultsTab"
+    
+    $panel = New-Object System.Windows.Forms.TableLayoutPanel
+    $panel.Dock = "Fill"
+    
+    # Results view
+    $resultsView = New-Object System.Windows.Forms.RichTextBox
+    $resultsView.Dock = "Fill"
+    $resultsView.ReadOnly = $true
+    
+    $panel.Controls.Add($resultsView)
+    $tab.Controls.Add($panel)
+    
+    return $tab
+}
+
+function New-SettingsTab {
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = "Settings"
+    $tab.Name = "SettingsTab"
+    
+    $panel = New-Object System.Windows.Forms.PropertyGrid
+    $panel.Dock = "Fill"
+    $tab.Controls.Add($panel)
+    
+    return $tab
+}
+
+function New-StatusStrip {
+    $status = New-Object System.Windows.Forms.StatusStrip
+    $statusLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
+    $statusLabel.Name = "StatusLabel"
+    $statusLabel.Text = "Ready"
+    $status.Items.Add($statusLabel)
+    return $status
+}
+
+# Export all the control creation functions
+Export-ModuleMember -Function New-DLAButton, 
+                            New-DLATextBox, 
+                            New-DLALabel, 
+                            New-DLAProgressBar, 
+                            New-DLAListView, 
+                            Show-DLADialog,
+                            New-TabControl,
+                            New-StatusStrip
+
+--------------------
+
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\GUI\cuicode.ps1 ###
+# PowerShell Script to Collect Code Lines from a Directory and Subdirectories
+
+# Define parameters
+$Directory = Get-Location
+$OutputFile = "CodeLines.txt"
+
+# Ensure output file is empty or create it
+Set-Content -Path $OutputFile -Value ""  
+
+# Get all files recursively, excluding 'results' and 'logs' directories
+$files = Get-ChildItem -Path $Directory -Recurse -File | Where-Object {
+    ($_.FullName -notlike "*\results\*") -and ($_.FullName -notlike "*\logs\*")
+}
+
+foreach ($file in $files) {
+    # Write file name as a header
+    Add-Content -Path $OutputFile -Value "### File: $($file.FullName) ###"
+    
+    # Read file content and write each line
+    $lines = Get-Content -Path $file.FullName
+    foreach ($line in $lines) {
+        Add-Content -Path $OutputFile -Value $line
+    }
+    
+    # Add a separator for clarity
+    Add-Content -Path $OutputFile -Value "`n--------------------`n"
+}
+
+Write-Host "Code lines collected and stored in $OutputFile"
+
+--------------------
+
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\GUI\EventHandlers.ps1 ###
+# Event Handlers Module
+
+function BrowseButtonClick {
     param(
-        [Parameter(Mandatory=$true)]
-        [System.Windows.Forms.TabPage]$TabPage
+        [System.Windows.Forms.Button]$Button,
+        [System.Windows.Forms.Control.ControlCollection]$Controls
     )
     
-    # Create container panel
-    $panel = New-Object System.Windows.Forms.Panel
-    $panel.Dock = "Fill"
-    $panel.Padding = New-Object System.Windows.Forms.Padding(10)
+    $folderPath = Show-FolderPicker -Description "Select DiagLogs folder"
+    if ($folderPath) {
+        $Controls["SourcePath"].Text = $folderPath
+    }
+}
+
+function Handle-AnalyzeButtonClick {
+    param(
+        [System.Windows.Forms.Button]$Button,
+        [System.Windows.Forms.Control.ControlCollection]$Controls
+    )
     
-    # Create folder selection controls
-    $lblSource = New-Object System.Windows.Forms.Label
-    $lblSource.Location = New-Object System.Drawing.Point(10, 20)
-    $lblSource.Size = New-Object System.Drawing.Size(150, 20)
-    $lblSource.Text = "DiagLogs Folder:"
-    $panel.Controls.Add($lblSource)
+    $sourcePath = $Controls["SourcePath"].Text
+    if ([string]::IsNullOrWhiteSpace($sourcePath)) {
+        Show-Error "Please select a DiagLogs folder!"
+        return
+    }
+
+    # Update status
+    Update-Status "Analyzing folder structure..."
+
+    # Start analysis in background
+    $params = @{
+        FolderPath = $sourcePath
+        IncludeSubFolders = $true
+    }
+
+    Show-ProgressDialog -Title "Analysis" -Message "Analyzing folder structure..." -ScriptBlock {
+        param($p)
+        return Start-FolderAnalysis @p
+    } -ArgumentList $params
+}
+
+function Handle-SearchButtonClick {
+    param(
+        [System.Windows.Forms.Button]$button,
+        [hashtable]$controls
+    )
     
-    $txtSource = New-Object System.Windows.Forms.TextBox
-    $txtSource.Location = New-Object System.Drawing.Point(10, 40)
-    $txtSource.Size = New-Object System.Drawing.Size(500, 20)
-    $txtSource.Name = "SourcePath"
-    $panel.Controls.Add($txtSource)
-    
-    $btnSource = New-Object System.Windows.Forms.Button
-    $btnSource.Location = New-Object System.Drawing.Point(520, 40)
-    $btnSource.Size = New-Object System.Drawing.Size(80, 20)
-    $btnSource.Text = "Browse..."
-    $btnSource.Add_Click({
-        try {
-            # Use direct control reference from the parent panel
-            $txtSourcePathControl = $this.Parent.Controls["SourcePath"]
-            
-            if ($null -eq $txtSourcePathControl) {
-                Write-Host "Could not find SourcePath control" -ForegroundColor Red
-                return
-            }
-            
-            # Use folder browser directly since we know it works
-            $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-            $folderBrowser.Description = "Select DiagLogs folder"
-            
-            if ($folderBrowser.ShowDialog() -eq 'OK') {
-                $selectedPath = $folderBrowser.SelectedPath
-                Write-Host "Selected path: $selectedPath" -ForegroundColor Cyan
-                
-                # Update the text box value
-                $txtSourcePathControl.Text = $selectedPath
-                
-                # Verify it was set
-                Write-Host "TextBox value after update: '$($txtSourcePathControl.Text)'" -ForegroundColor Cyan
-            } else {
-                Write-Host "Folder selection canceled" -ForegroundColor Yellow
-            }
-        } catch {
-            Write-Host "Error in folder selection: $_" -ForegroundColor Red
+    try {
+        if ($null -eq $script:AnalysisResults) {
+            Show-Error "Please analyze a folder first!"
+            return
         }
-    })
-    $panel.Controls.Add($btnSource)
-    
-    $lblOutput = New-Object System.Windows.Forms.Label
-    $lblOutput.Location = New-Object System.Drawing.Point(10, 70)
-    $lblOutput.Size = New-Object System.Drawing.Size(150, 20)
-    $lblOutput.Text = "Output Folder:"
-    $panel.Controls.Add($lblOutput)
-    
-    $txtOutput = New-Object System.Windows.Forms.TextBox
-    $txtOutput.Location = New-Object System.Drawing.Point(10, 90)
-    $txtOutput.Size = New-Object System.Drawing.Size(500, 20)
-    $txtOutput.Text = (Get-AppSetting -Name "DefaultOutputPath")
-    $txtOutput.Name = "OutputPath"
-    $panel.Controls.Add($txtOutput)
-    
-    $btnOutput = New-Object System.Windows.Forms.Button
-    $btnOutput.Location = New-Object System.Drawing.Point(520, 90)
-    $btnOutput.Size = New-Object System.Drawing.Size(80, 20)
-    $btnOutput.Text = "Browse..."
-    $btnOutput.Add_Click({
-        try {
-            # Use direct control reference from the parent panel
-            $txtOutputPathControl = $panel.Controls["OutputPath"]
-            
-            if ($null -eq $txtOutputPathControl) {
-                Write-Host "Could not find OutputPath control" -ForegroundColor Red
-                return
-            }
-            
-            # Use folder browser directly
+        
+        # ... Rest of search button click handler
+    }
+    catch {
+        Show-Error "Error during search: $_"
+    }
+}
+
+# ... Continue with other event handlers
+
+--------------------
+
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\GUI\Helpers.ps1 ###
+# Helper functions for GUI operations
+
+function Set-ResultsFont {
+    param([System.Windows.Forms.Control]$Control)
+    try {
+        $fontFamily = Get-AppSetting -Name "ResultsFontFamily" -DefaultValue "Consolas"
+        $fontSize = Get-AppSetting -Name "ResultsFontSize" -DefaultValue 9
+        $Control.Font = New-Object System.Drawing.Font($fontFamily, $fontSize)
+    }
+    catch {
+        $Control.Font = New-Object System.Drawing.Font("Consolas", 9)
+    }
+}
+
+function Show-Error {
+    param([string]$Message, [string]$Title = "Error")
+    [System.Windows.Forms.MessageBox]::Show($Message, $Title, 
+        [System.Windows.Forms.MessageBoxButtons]::OK, 
+        [System.Windows.Forms.MessageBoxIcon]::Error)
+}
+
+function Update-Status {
+    param([string]$Message)
+    $statusLabel = $script:MainForm.Controls["StatusStrip"].Items["StatusLabel"]
+    if ($statusLabel) {
+        $statusLabel.Text = $Message
+    }
+}
+
+# ... Add more helper functions
+
+--------------------
+
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\GUI\MainForm.psm1 ###
+# DiagLog Analyzer - Main Form
+# This file contains the main application window and UI logic
+
+# Import assemblies
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# Global variables
+$script:MainForm = $null
+$script:AnalysisResults = $null
+
+function Show-MainForm {
+    try {
+        # Create form
+        $form = New-Object System.Windows.Forms.Form
+        $form.Text = "DiagLog Analyzer"
+        $form.Size = New-Object System.Drawing.Size(900, 700)
+        $form.StartPosition = "CenterScreen"
+        
+        # Store reference
+        $script:MainForm = $form
+        
+        # Main layout
+        $mainLayout = New-Object System.Windows.Forms.TableLayoutPanel
+        $mainLayout.Dock = "Fill"
+        $mainLayout.RowCount = 2
+        $mainLayout.ColumnCount = 1
+        $mainLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 25)))
+        
+        # Tab control
+        $tabControl = New-Object System.Windows.Forms.TabControl
+        $tabControl.Dock = "Fill"
+        $tabControl.Name = "MainTabControl"
+        
+        # Analysis tab
+        $analysisTab = New-Object System.Windows.Forms.TabPage
+        $analysisTab.Text = "Analysis"
+        $analysisTab.Name = "AnalysisTab"
+        
+        # Add some basic controls to Analysis tab
+        $lblSource = New-Object System.Windows.Forms.Label
+        $lblSource.Text = "Source Folder:"
+        $lblSource.Location = New-Object System.Drawing.Point(10, 15)
+        $lblSource.AutoSize = $true
+        
+        $txtSource = New-Object System.Windows.Forms.TextBox
+        $txtSource.Location = New-Object System.Drawing.Point(120, 12)
+        $txtSource.Width = 400
+        $txtSource.Name = "SourcePath"
+        
+        $btnBrowse = New-Object System.Windows.Forms.Button
+        $btnBrowse.Text = "Browse..."
+        $btnBrowse.Location = New-Object System.Drawing.Point(530, 10)
+        $btnBrowse.Width = 80
+        $btnBrowse.Add_Click({
             $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-            $folderBrowser.Description = "Select output folder"
-            $folderBrowser.ShowNewFolderButton = $true
-            
-            # Set initial directory if current value exists
-            if (-not [string]::IsNullOrWhiteSpace($txtOutputPathControl.Text) -and 
-                (Test-Path -Path $txtOutputPathControl.Text -ErrorAction SilentlyContinue)) {
-                $folderBrowser.SelectedPath = $txtOutputPathControl.Text
-            }
-            
+            $folderBrowser.Description = "Select DiagLogs folder to analyze"
             if ($folderBrowser.ShowDialog() -eq 'OK') {
-                $selectedPath = $folderBrowser.SelectedPath
-                Write-Host "Selected output path: $selectedPath" -ForegroundColor Cyan
-                
-                # Update the text box value
-                $txtOutputPathControl.Text = $selectedPath
-                
-                # Verify it was set
-                Write-Host "Output TextBox value after update: '$($txtOutputPathControl.Text)'" -ForegroundColor Cyan
-            } else {
-                Write-Host "Output folder selection canceled" -ForegroundColor Yellow
+                $txtSource.Text = $folderBrowser.SelectedPath
             }
-        } catch {
-            Write-Host "Error in output folder selection: $_" -ForegroundColor Red
+        })
+        
+        # Add controls to analysis tab
+        $analysisTab.Controls.AddRange(@($lblSource, $txtSource, $btnBrowse))
+        
+        # Search tab
+        $searchTab = New-Object System.Windows.Forms.TabPage
+        $searchTab.Text = "Search"
+        $searchTab.Name = "SearchTab"
+        
+        # Add tabs to tab control
+        $tabControl.TabPages.AddRange(@($analysisTab, $searchTab))
+        
+        # Status strip
+        $statusStrip = New-Object System.Windows.Forms.StatusStrip
+        $statusLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
+        $statusLabel.Name = "StatusLabel"
+        $statusLabel.Text = "Ready"
+        $statusStrip.Items.Add($statusLabel)
+        
+        # Add controls to main layout
+        $mainLayout.Controls.Add($tabControl, 0, 0)
+        $mainLayout.Controls.Add($statusStrip, 0, 1)
+        
+        # Add main layout to form
+        $form.Controls.Add($mainLayout)
+        
+        # Show the form
+        Write-Host "About to show form dialog"
+        [void]$form.ShowDialog()
+        
+        # Return success
+        return $true
+    }
+    catch {
+        # Log the error with type information for debugging
+        $errorType = $_.Exception.GetType().FullName
+        $errorMsg = "Error showing main form ($errorType): $_"
+        Write-Host $errorMsg -ForegroundColor Red
+        
+        # Re-throw for caller
+        throw $errorMsg
+    }
+}
+
+# Helper function to update the status strip
+function Update-Status {
+    param([string]$Message)
+    
+    if ($null -ne $script:MainForm) {
+        $statusStrip = $script:MainForm.Controls | Where-Object { $_ -is [System.Windows.Forms.StatusStrip] }
+        if ($statusStrip) {
+            $statusLabel = $statusStrip.Items["StatusLabel"]
+            if ($statusLabel) {
+                $statusLabel.Text = $Message
+            }
         }
-    })
-    $panel.Controls.Add($btnOutput)
+    }
+}
+
+# Export functions
+Export-ModuleMember -Function Show-MainForm, Update-Status
+
+--------------------
+
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\GUI\MainWindow.ps1 ###
+# Import dependencies
+. (Join-Path -Path $PSScriptRoot -ChildPath "Controls.ps1")
+. (Join-Path -Path $PSScriptRoot -ChildPath "EventHandlers.ps1")
+. (Join-Path -Path $PSScriptRoot -ChildPath "TabControls.ps1")
+. (Join-Path -Path $PSScriptRoot -ChildPath "Panels.ps1")
+. (Join-Path -Path $PSScriptRoot -ChildPath "Helpers.ps1")
+
+# Global variables for application state
+$script:MainForm = $null
+$script:AnalysisResults = $null
+
+function Initialize-MainWindow {
+    param(
+        [string]$PowerShellPath = "$PSHOME\powershell.exe"
+    )
     
-    # Create analysis options
-    $grpOptions = New-Object System.Windows.Forms.GroupBox
-    $grpOptions.Location = New-Object System.Drawing.Point(10, 130)
-    $grpOptions.Size = New-Object System.Drawing.Size(590, 80)
-    $grpOptions.Text = "Analysis Options"
-    $panel.Controls.Add($grpOptions)
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "DiagLog Analyzer"
+    $form.Size = New-Object System.Drawing.Size(
+        (Get-AppSetting -Name "MainFormWidth"),
+        (Get-AppSetting -Name "MainFormHeight")
+    )
+    $form.StartPosition = "CenterScreen"
     
-    $chkSubfolders = New-Object System.Windows.Forms.CheckBox
-    $chkSubfolders.Location = New-Object System.Drawing.Point(20, 20)
-    $chkSubfolders.Size = New-Object System.Drawing.Size(200, 20)
-    $chkSubfolders.Text = "Include Subfolders"
-    $chkSubfolders.Checked = $true
-    $grpOptions.Controls.Add($chkSubfolders)
+    # Store reference to main form
+    $script:MainForm = $form
     
-    $chkExtractCabs = New-Object System.Windows.Forms.CheckBox
-    $chkExtractCabs.Location = New-Object System.Drawing.Point(20, 50)
-    $chkExtractCabs.Size = New-Object System.Drawing.Size(200, 20)
-    $chkExtractCabs.Text = "Extract CAB Files Automatically"
-    $chkExtractCabs.Checked = (Get-AppSetting -Name "ExtractCabsAutomatically")
-    $grpOptions.Controls.Add($chkExtractCabs)
-    
-    $chkSkipExisting = New-Object System.Windows.Forms.CheckBox
-    $chkSkipExisting.Location = New-Object System.Drawing.Point(230, 50)
-    $chkSkipExisting.Size = New-Object System.Drawing.Size(200, 20)
-    $chkSkipExisting.Text = "Skip Existing CAB Extracts"
-    $chkSkipExisting.Checked = (Get-AppSetting -Name "SkipExistingCabExtracts")
-    $grpOptions.Controls.Add($chkSkipExisting)
-    
-    # Create action buttons
-    $btnAnalyze = New-Object System.Windows.Forms.Button
-    $btnAnalyze.Location = New-Object System.Drawing.Point(10, 230)
-    $btnAnalyze.Size = New-Object System.Drawing.Size(120, 30)
-    $btnAnalyze.Text = "Analyze Structure"
-    $btnAnalyze.Add_Click({
+    # Set icon if available
+    if ($PowerShellPath -and (Test-Path $PowerShellPath)) {
         try {
-            # Get the source path control directly
-            $txtSourcePathControl = $panel.Controls["SourcePath"]
-            
-            if ($null -eq $txtSourcePathControl) {
-                [System.Windows.MessageBox]::Show("Internal error: Could not find source path control", "Error", 
-                    [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-                return
-            }
-            
-            $sourcePath = $txtSourcePathControl.Text
-            Write-Host "Source path from control: '$sourcePath'" -ForegroundColor Cyan
-            
-            # Validate inputs
-            if ([string]::IsNullOrWhiteSpace($sourcePath)) {
-                [System.Windows.MessageBox]::Show("Please select a DiagLogs folder!", "Error", 
-                    [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-                return
-            }
-            
-            # Check if folder exists
-            if (-not (Test-Path -Path $sourcePath -PathType Container -ErrorAction SilentlyContinue)) {
-                [System.Windows.MessageBox]::Show("The specified DiagLogs folder does not exist or cannot be accessed.", 
-                    "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-                return
-            }
-            
-            # Get output path
-            $txtOutputPathControl = $panel.Controls["OutputPath"]
-            $outputPath = if ($null -ne $txtOutputPathControl) { $txtOutputPathControl.Text } else { "" }
-            
-            # Ensure output directory exists
-            if ([string]::IsNullOrWhiteSpace($outputPath)) {
-                $outputPath = Get-AppSetting -Name "DefaultOutputPath"
-            }
-            
-            try {
-                if (-not (Test-Path -Path $outputPath -ErrorAction SilentlyContinue)) {
-                    New-Item -Path $outputPath -ItemType Directory -Force -ErrorAction Stop | Out-Null
-                }
-            }
-            catch {
-                [System.Windows.MessageBox]::Show("Unable to create output folder: $_", "Error", 
-                    [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-                return
-            }
-            
-            # Update status
-            $statusLabel = $script:MainForm.Controls["StatusStrip"].Items["StatusLabel"]
-            if ($null -ne $statusLabel) {
-                $statusLabel.Text = "Analyzing folder structure..."
-            }
-            
-            # Clear and update results text box
-            $rtbResults = $panel.Controls["ResultsTextBox"]
-            if ($null -ne $rtbResults) {
-                $rtbResults.Clear()
-                $rtbResults.AppendText("Starting analysis of $sourcePath...$([Environment]::NewLine)")
-            }
-            
-            # Disable buttons during analysis
-            $btnAnalyze.Enabled = $false
-            if ($null -ne $btnReport) {
-                $btnReport.Enabled = $false
-            }
-            
-            # Update settings safely
-            if ($null -ne $chkExtractCabs) {
-                Set-AppSetting -Name "ExtractCabsAutomatically" -Value $chkExtractCabs.Checked
-            }
-            
-            if ($null -ne $chkSkipExisting) {
-                Set-AppSetting -Name "SkipExistingCabExtracts" -Value $chkSkipExisting.Checked
-            }
-            
-            # Run analysis in background with safety checks
-            $analysisParams = @{
-                FolderPath = $sourcePath  # Use validated path
-                IncludeSubFolders = if ($null -ne $chkSubfolders) { $chkSubfolders.Checked } else { $true }
-            }
-            
-            # Ensure modules exist
-            $analyzerPath = Join-Path -Path $PSScriptRoot -ChildPath "..\Core\Analyzer.ps1"
-            $loggingPath = Join-Path -Path $PSScriptRoot -ChildPath "..\Utils\Logging.ps1"
-            
-            if (-not (Test-Path -Path $analyzerPath -ErrorAction SilentlyContinue)) {
-                throw "Analyzer module not found at: $analyzerPath"
-            }
-            
-            if (-not (Test-Path -Path $loggingPath -ErrorAction SilentlyContinue)) {
-                throw "Logging module not found at: $loggingPath"
-            }
-            
-            # Start the job with validated paths
-            Start-ThreadJob -ScriptBlock {
-                param($params, $analyzerPath, $loggingPath)
-                . $analyzerPath
-                . $loggingPath
-                Start-FolderAnalysis @params
-            } -ArgumentList $analysisParams, $analyzerPath, $loggingPath -StreamingHost $Host | Out-Null
-            
-            # Timer to check job progress
-            $timer = New-Object System.Windows.Forms.Timer
-            $timer.Interval = 1000
-            $timer.Add_Tick({
-                # Check for running jobs
-                $job = Get-Job -State Running | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
-                
-                if ($null -eq $job) {
-                    # Job completed or not found, check for completed job
-                    $job = Get-Job -State Completed | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
-                    
-                    if ($null -ne $job) {
-                        try {
-                            # Try to get the results
-                            $script:AnalysisResults = Receive-Job -Job $job -ErrorAction Stop
-                            $job | Remove-Job -ErrorAction SilentlyContinue
-                            
-                            # Update UI with results if we have them
-                            if ($null -ne $script:AnalysisResults) {
-                                # Update results textbox
-                                if ($null -ne $rtbResults) {
-                                    $rtbResults.AppendText("Analysis completed.$([Environment]::NewLine)$([Environment]::NewLine)")
-                                    
-                                    # Safe call to Get-AnalysisSummary
-                                    try {
-                                        $summary = Get-AnalysisSummary -AnalysisResults $script:AnalysisResults
-                                        $rtbResults.AppendText($summary)
-                                    }
-                                    catch {
-                                        $rtbResults.AppendText("Error generating summary: $_$([Environment]::NewLine)")
-                                    }
-                                }
-                                
-                                # Enable tabs and update with results
-                                # Enable tabs and update with results
-                                $tabControl = $script:MainForm.Controls["MainTabControl"]
-                                if ($null -ne $tabControl) {
-                                    # Find the search tab by name
-                                    $searchTab = $null
-                                    $extractTab = $null
-                                    
-                                    foreach ($tab in $tabControl.TabPages) {
-                                        if ($tab.Name -eq "SearchTab") {
-                                            $searchTab = $tab
-                                        }
-                                        elseif ($tab.Name -eq "ExtractTab") {
-                                            $extractTab = $tab
-                                        }
-                                    }
-                                    
-                                    # Enable search tab if found
-                                    if ($null -ne $searchTab) {
-                                        $searchTab.Enabled = $true
-                                    }
-                                    
-                                    # Handle extract tab if we have CAB files
-                                    $cabCount = if ($null -ne $script:AnalysisResults.CabFiles) { $script:AnalysisResults.CabFiles.Count } else { 0 }
-                                    
-                                    if ($null -ne $extractTab) {
-                                        $extractTab.Enabled = ($cabCount -gt 0)
-                                    
-                                        # Update extract tab with CAB files if we have them
-                                        if ($cabCount -gt 0) {
-                                            $lstCabFiles = $tabControl.TabPages["ExtractTab"].Controls["CabFilesList"]
-                                            if ($null -ne $lstCabFiles) {
-                                                $lstCabFiles.Items.Clear()
-                                                
-                                                foreach ($cab in $script:AnalysisResults.CabFiles) {
-                                                    if ($null -ne $cab -and $null -ne $cab.RelativePath) {
-                                                        $lstCabFiles.Items.Add($cab.RelativePath)
-                                                    }
-                                                }
-                                                
-                                                # Auto-extract if enabled
-                                                if ($null -ne $chkExtractCabs -and $chkExtractCabs.Checked) {
-                                                    # Switch to extract tab
-                                                    $tabControl.SelectedTab = $tabControl.TabPages["ExtractTab"]
-                                                    
-                                                    # Click the extract button if it exists
-                                                    $btnExtractAll = $tabControl.TabPages["ExtractTab"].Controls["ExtractAllButton"]
-                                                    if ($null -ne $btnExtractAll) {
-                                                        $btnExtractAll.PerformClick()
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    
-                                    # Update search tab with file types
-                                    if ($null -ne $tabControl.TabPages["SearchTab"]) {
-                                        $clbFileTypes = $tabControl.TabPages["SearchTab"].Controls["FileTypesList"]
-                                        if ($null -ne $clbFileTypes -and $null -ne $script:AnalysisResults.Extensions) {
-                                            $clbFileTypes.Items.Clear()
-                                            
-                                            foreach ($ext in $script:AnalysisResults.Extensions.Keys) {
-                                                if ($null -ne $ext) {
-                                                    $clbFileTypes.Items.Add($ext, $true)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                # Update status with file counts
-                                $fileCount = if ($null -ne $script:AnalysisResults.Files) { $script:AnalysisResults.Files } else { 0 }
-                                $dirCount = if ($null -ne $script:AnalysisResults.Directories) { $script:AnalysisResults.Directories } else { 0 }
-                                
-                                if ($null -ne $statusLabel) {
-                                    $statusLabel.Text = "Analysis complete. Found $fileCount files, $dirCount directories."
-                                }
-                            }
-                            else {
-                                # Handle null analysis results
-                                if ($null -ne $rtbResults) {
-                                    $rtbResults.AppendText("Analysis completed but returned no results.$([Environment]::NewLine)")
-                                }
-                                
-                                if ($null -ne $statusLabel) {
-                                    $statusLabel.Text = "Analysis completed with no results."
-                                }
-                            }
-                        }
-                        catch {
-                            # Handle errors during result processing
-                            if ($null -ne $rtbResults) {
-                                $rtbResults.AppendText("Error processing analysis results: $_$([Environment]::NewLine)")
-                            }
-                            
-                            if ($null -ne $statusLabel) {
-                                $statusLabel.Text = "Error processing analysis results."
-                            }
-                        }
-                    }
-                    else {
-                        # No completed job found - either it failed or was removed
-                        if ($null -ne $rtbResults) {
-                            $rtbResults.AppendText("Analysis did not complete successfully.$([Environment]::NewLine)")
-                        }
-                        
-                        if ($null -ne $statusLabel) {
-                            $statusLabel.Text = "Analysis failed."
-                        }
-                    }
-                    
-                    # Re-enable buttons regardless of outcome
-                    $btnAnalyze.Enabled = $true
-                    if ($null -ne $btnReport) {
-                        $btnReport.Enabled = $true
-                    }
-                    
-                    # Stop and dispose the timer
-                    $timer.Stop()
-                    $timer.Dispose()
-                }
-            })
-            $timer.Start()
+            $form.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($PowerShellPath)
         }
         catch {
-            # Handle startup errors
-            Write-Host "Error in analyzer: $_" -ForegroundColor Red
-            
-            if ($null -ne $rtbResults) {
-                $rtbResults.AppendText("Failed to start analysis: $_$([Environment]::NewLine)")
-            }
-            
-            if ($null -ne $statusLabel) {
-                $statusLabel.Text = "Failed to start analysis."
-            }
-            
-            # Re-enable buttons
-            $btnAnalyze.Enabled = $true
-            if ($null -ne $btnReport) {
-                $btnReport.Enabled = $true
-            }
-            
-            # Show error message
-            [System.Windows.MessageBox]::Show("Failed to start analysis: $_", "Error", 
-                [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+            Write-Log -Message "Could not load icon: $_" -Level WARNING -Component "GUI"
         }
-    })
-    $panel.Controls.Add($btnAnalyze)
-    
-    $btnReport = New-Object System.Windows.Forms.Button
-    $btnReport.Location = New-Object System.Drawing.Point(140, 230)
-    $btnReport.Size = New-Object System.Drawing.Size(120, 30)
-    $btnReport.Text = "Generate Report"
-    $btnReport.Enabled = $false
-    $btnReport.Add_Click({
-        if ($null -eq $script:AnalysisResults) {
-            [System.Windows.MessageBox]::Show("Please analyze a folder first!", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-            return
-        }
-        
-        $statusLabel = $script:MainForm.Controls["StatusStrip"].Items["StatusLabel"]
-        $statusLabel.Text = "Generating report..."
-        
-        # Generate report
-        $reportPath = New-AnalysisReport -AnalysisResults $script:AnalysisResults -OutputPath (Join-Path -Path $txtOutput.Text -ChildPath "AnalysisReport.html")
-        
-        # Open report
-        Start-Process $reportPath
-        
-        $statusLabel.Text = "Report generated and opened."
-    })
-    $panel.Controls.Add($btnReport)
-    
-    # Create results area
-    $rtbResults = New-Object System.Windows.Forms.RichTextBox
-    $rtbResults.Location = New-Object System.Drawing.Point(10, 270)
-    $rtbResults.Size = New-Object System.Drawing.Size(570, 200)
-    $rtbResults.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
-    $rtbResults.ReadOnly = $true
-
-    try {
-        $fontFamily = Get-AppSetting -Name "ResultsFontFamily"
-        $fontSize = Get-AppSetting -Name "ResultsFontSize"
-        
-        # Verify font family is valid
-        if ([string]::IsNullOrEmpty($fontFamily)) {
-            $fontFamily = "Consolas" # Default fallback
-        }
-        
-        # Check if the font family actually exists on the system
-        $fontExists = $false
-        foreach ($family in [System.Drawing.FontFamily]::Families) {
-            if ($family.Name -eq $fontFamily) {
-                $fontExists = $true
-                break
-            }
-        }
-        
-        # If the configured font doesn't exist, use a system font that should be available
-        if (-not $fontExists) {
-            $fontFamily = "Arial" # Widely available system font
-        }
-        
-        # Ensure font size is valid
-        if ($null -eq $fontSize -or -not ($fontSize -is [int]) -or $fontSize -lt 8 -or $fontSize -gt 72) {
-            $fontSize = 9 # Default fallback size
-        }
-        
-        # Now create the font with validated values
-        $rtbResults.Font = New-Object System.Drawing.Font($fontFamily, $fontSize)
     }
-    catch {
-        # If anything goes wrong, use a basic system font
-        Write-Host "Error setting custom font: $_" -ForegroundColor Yellow
-        $rtbResults.Font = New-Object System.Drawing.Font("Arial", 9)
-    }
-
-    $rtbResults.BackColor = [System.Drawing.Color]::White
-    $rtbResults.MultiLine = $true
-    $rtbResults.ScrollBars = "Both"
-    $rtbResults.WordWrap = $false
-    $rtbResults.Name = "ResultsTextBox"
-    $panel.Controls.Add($rtbResults)
     
-    # Add panel to tab page
-    $TabPage.Controls.Add($panel)
+    # Add main tab control
+    $tabControl = New-TabControl
+    $form.Controls.Add($tabControl)
+    
+    # Add status strip
+    $statusStrip = New-StatusStrip
+    $form.Controls.Add($statusStrip)
+    
+    # Add form closing event
+    $form.Add_FormClosing({
+        param($sender, $e)
+        Save-AppSettings
+        Write-Log -Message "Application closing" -Level INFO -Component "GUI"
+    })
+    
+    # Add form resize end event to save window size
+    $form.Add_ResizeEnd({
+        Set-AppSetting -Name "MainFormWidth" -Value $form.Size.Width
+        Set-AppSetting -Name "MainFormHeight" -Value $form.Size.Height
+    })
+    
+    return $form
 }
 
-function Setup-SearchTab {
+function Show-MainWindow {
     param(
-        [Parameter(Mandatory=$true)]
-        [System.Windows.Forms.TabPage]$TabPage
+        [string]$PowerShellPath = "$PSHOME\powershell.exe"
     )
     
-    # Create container panel
-    $panel = New-Object System.Windows.Forms.Panel
-    $panel.Dock = "Fill"
-    $panel.Padding = New-Object System.Windows.Forms.Padding(10)
-    
-    # Create search controls
-    $lblSearch = New-Object System.Windows.Forms.Label
-    $lblSearch.Location = New-Object System.Drawing.Point(10, 20)
-    $lblSearch.Size = New-Object System.Drawing.Size(150, 20)
-    $lblSearch.Text = "Search Text:"
-    $panel.Controls.Add($lblSearch)
-    
-    $txtSearch = New-Object System.Windows.Forms.TextBox
-    $txtSearch.Location = New-Object System.Drawing.Point(10, 40)
-    $txtSearch.Size = New-Object System.Drawing.Size(400, 20)
-    $txtSearch.Name = "SearchText"
-    $panel.Controls.Add($txtSearch)
-    
-    $chkCaseSensitive = New-Object System.Windows.Forms.CheckBox
-    $chkCaseSensitive.Location = New-Object System.Drawing.Point(420, 40)
-    $chkCaseSensitive.Size = New-Object System.Drawing.Size(150, 20)
-    $chkCaseSensitive.Text = "Case Sensitive"
-    $panel.Controls.Add($chkCaseSensitive)
-    
-    # Create file type selection
-    $lblFileTypes = New-Object System.Windows.Forms.Label
-    $lblFileTypes.Location = New-Object System.Drawing.Point(10, 70)
-    $lblFileTypes.Size = New-Object System.Drawing.Size(150, 20)
-    $lblFileTypes.Text = "File Types to Search:"
-    $panel.Controls.Add($lblFileTypes)
-    
-    $clbFileTypes = New-Object System.Windows.Forms.CheckedListBox
-    $clbFileTypes.Location = New-Object System.Drawing.Point(10, 90)
-    $clbFileTypes.Size = New-Object System.Drawing.Size(200, 120)
-    $clbFileTypes.CheckOnClick = $true
-    $clbFileTypes.Name = "FileTypesList"
-    $panel.Controls.Add($clbFileTypes)
-    
-    $btnSelectAll = New-Object System.Windows.Forms.Button
-    $btnSelectAll.Location = New-Object System.Drawing.Point(10, 220)
-    $btnSelectAll.Size = New-Object System.Drawing.Size(95, 25)
-    $btnSelectAll.Text = "Select All"
-    $btnSelectAll.Add_Click({
-        for ($i = 0; $i -lt $clbFileTypes.Items.Count; $i++) {
-            $clbFileTypes.SetItemChecked($i, $true)
-        }
-    })
-    $panel.Controls.Add($btnSelectAll)
-    
-    $btnSelectNone = New-Object System.Windows.Forms.Button
-    $btnSelectNone.Location = New-Object System.Drawing.Point(115, 220)
-    $btnSelectNone.Size = New-Object System.Drawing.Size(95, 25)
-    $btnSelectNone.Text = "Select None"
-    $btnSelectNone.Add_Click({
-        for ($i = 0; $i -lt $clbFileTypes.Items.Count; $i++) {
-            $clbFileTypes.SetItemChecked($i, $false)
-        }
-    })
-    $panel.Controls.Add($btnSelectNone)
-    
-    # Create search options
-    $grpOptions = New-Object System.Windows.Forms.GroupBox
-    $grpOptions.Location = New-Object System.Drawing.Point(230, 90)
-    $grpOptions.Size = New-Object System.Drawing.Size(350, 120)
-    $grpOptions.Text = "Search Options"
-    $panel.Controls.Add($grpOptions)
-    
-    $lblContextBefore = New-Object System.Windows.Forms.Label
-    $lblContextBefore.Location = New-Object System.Drawing.Point(10, 20)
-    $lblContextBefore.Size = New-Object System.Drawing.Size(150, 20)
-    $lblContextBefore.Text = "Context Lines Before:"
-    $grpOptions.Controls.Add($lblContextBefore)
-    
-    $numContextBefore = New-Object System.Windows.Forms.NumericUpDown
-    $numContextBefore.Location = New-Object System.Drawing.Point(160, 20)
-    $numContextBefore.Size = New-Object System.Drawing.Size(60, 20)
-    $numContextBefore.Minimum = 0
-    $numContextBefore.Maximum = 10
-    $numContextBefore.Value = 2
-    $grpOptions.Controls.Add($numContextBefore)
-    
-    $lblContextAfter = New-Object System.Windows.Forms.Label
-    $lblContextAfter.Location = New-Object System.Drawing.Point(10, 50)
-    $lblContextAfter.Size = New-Object System.Drawing.Size(150, 20)
-    $lblContextAfter.Text = "Context Lines After:"
-    $grpOptions.Controls.Add($lblContextAfter)
-    
-    $numContextAfter = New-Object System.Windows.Forms.NumericUpDown
-    $numContextAfter.Location = New-Object System.Drawing.Point(160, 50)
-    $numContextAfter.Size = New-Object System.Drawing.Size(60, 20)
-    $numContextAfter.Minimum = 0
-    $numContextAfter.Maximum = 10
-    $numContextAfter.Value = 2
-    $grpOptions.Controls.Add($numContextAfter)
-    
-    $chkIncludeCabs = New-Object System.Windows.Forms.CheckBox
-    $chkIncludeCabs.Location = New-Object System.Drawing.Point(10, 80)
-    $chkIncludeCabs.Size = New-Object System.Drawing.Size(250, 20)
-    $chkIncludeCabs.Text = "Include Extracted CAB Files in Search"
-    $chkIncludeCabs.Checked = $true
-    $grpOptions.Controls.Add($chkIncludeCabs)
-    
-    # Create search button
-    $btnSearch = New-Object System.Windows.Forms.Button
-    $btnSearch.Location = New-Object System.Drawing.Point(230, 220)
-    $btnSearch.Size = New-Object System.Drawing.Size(120, 30)
-    $btnSearch.Text = "Search"
-    $btnSearch.Add_Click({
-        if ($null -eq $script:AnalysisResults) {
-            [System.Windows.MessageBox]::Show("Please analyze a folder first!", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-            return
-        }
-        
-        if ([string]::IsNullOrWhiteSpace($txtSearch.Text)) {
-            [System.Windows.MessageBox]::Show("Please enter text to search for!", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-            return
-        }
-        
-# Get selected file types
-$selectedTypes = @()
-for ($i = 0; $i -lt $clbFileTypes.Items.Count; $i++) {
-    if ($clbFileTypes.GetItemChecked($i)) {
-        $selectedTypes += $clbFileTypes.Items[$i]
-    }
-}
-
-if ($selectedTypes.Count -eq 0) {
-    [System.Windows.MessageBox]::Show("Please select at least one file type to search in!", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-    return
-}
-
-# Update status
-$statusLabel = $script:MainForm.Controls["StatusStrip"].Items["StatusLabel"]
-$statusLabel.Text = "Searching..."
-$rtbResults.Clear()
-$rtbResults.AppendText("Searching for '$($txtSearch.Text)' in selected file types...$([Environment]::NewLine)")
-
-# Disable buttons during search
-$btnSearch.Enabled = $false
-$btnSearchReport.Enabled = $false
-
-# Search parameters
-$searchParams = @{
-    AnalysisResults = $script:AnalysisResults
-    SearchText = $txtSearch.Text
-    ExtensionsToInclude = $selectedTypes
-    ContextLinesBefore = [int]$numContextBefore.Value
-    ContextLinesAfter = [int]$numContextAfter.Value
-    CaseSensitive = $chkCaseSensitive.Checked
-    IncludeExtractedCabs = $chkIncludeCabs.Checked
-}
-
-# Start background job
-Start-ThreadJob -ScriptBlock {
-    param($params)
-    # Load required modules
-    . (Join-Path -Path $using:PSScriptRoot -ChildPath "..\Core\FileSearch.ps1")
-    . (Join-Path -Path $using:PSScriptRoot -ChildPath "..\Utils\Logging.ps1")
-    
-    # Execute search
-    $searchResults = Search-AnalysisResults @params
-    return $searchResults
-} -ArgumentList $searchParams -StreamingHost $Host | Out-Null
-
-# Timer to check job progress
-$timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 1000
-$timer.Add_Tick({
-    $job = Get-Job -State Running | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
-    
-    if ($null -eq $job) {
-        # Job completed, get results
-        $job = Get-Job -State Completed | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
-        
-        if ($null -ne $job) {
-            $searchResults = Receive-Job -Job $job
-            $job | Remove-Job
-            
-            # Store results globally for report generation
-            $script:SearchResults = $searchResults
-            
-            # Update UI with results
-            $rtbResults.AppendText("Search complete: Found $($searchResults.TotalMatches) matches in $($searchResults.FilesWithMatches) files.$([Environment]::NewLine)$([Environment]::NewLine)")
-            
-            $matchingResults = $searchResults.Results | Where-Object { -not $_.Skipped -and $_.MatchCount -gt 0 } | Sort-Object -Property MatchCount -Descending
-            
-            foreach ($fileResult in $matchingResults) {
-                $rtbResults.AppendText("File: $($fileResult.FilePath) ($($fileResult.MatchCount) matches)$([Environment]::NewLine)")
-                
-                foreach ($match in $fileResult.Matches) {
-                    $rtbResults.AppendText("  Line $($match.MatchLineNumber): $($match.MatchLine.Trim())$([Environment]::NewLine)")
-                }
-                
-                $rtbResults.AppendText("$([Environment]::NewLine)")
-            }
-            
-            if ($matchingResults.Count -eq 0) {
-                $rtbResults.AppendText("No matches found for the search term.$([Environment]::NewLine)")
-            }
-            
-            # Enable buttons
-            $btnSearch.Enabled = $true
-            $btnSearchReport.Enabled = $true
-            
-            # Update status
-            $statusLabel.Text = "Search complete. Found $($searchResults.TotalMatches) matches in $($searchResults.FilesWithMatches) files."
-        }
-        else {
-            # No completed job found
-            $rtbResults.AppendText("Search failed.$([Environment]::NewLine)")
-            $btnSearch.Enabled = $true
-            $btnSearchReport.Enabled = $false
-            $statusLabel.Text = "Search failed."
-        }
-        
-        $timer.Stop()
-        $timer.Dispose()
-    }
-})
-$timer.Start()
-})
-$panel.Controls.Add($btnSearch)
-
-$btnSearchReport = New-Object System.Windows.Forms.Button
-$btnSearchReport.Location = New-Object System.Drawing.Point(360, 220)
-$btnSearchReport.Size = New-Object System.Drawing.Size(120, 30)
-$btnSearchReport.Text = "Generate Report"
-$btnSearchReport.Enabled = $false
-$btnSearchReport.Add_Click({
-if ($null -eq $script:SearchResults) {
-    [System.Windows.MessageBox]::Show("Please perform a search first!", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-    return
-}
-
-$statusLabel = $script:MainForm.Controls["StatusStrip"].Items["StatusLabel"]
-$statusLabel.Text = "Generating search report..."
-
-# Get output path from analysis tab
-$txtOutput = $script:MainForm.Controls["MainTabControl"].TabPages["AnalysisTab"].Controls["OutputPath"]
-
-# Generate report
-$reportPath = New-SearchReport -SearchResults $script:SearchResults -OutputPath (Join-Path -Path $txtOutput.Text -ChildPath "SearchReport.html")
-
-# Open report
-Start-Process $reportPath
-
-$statusLabel.Text = "Search report generated and opened."
-})
-$panel.Controls.Add($btnSearchReport)
-
-# Create results area
-$rtbResults = New-Object System.Windows.Forms.RichTextBox
-$rtbResults.Location = New-Object System.Drawing.Point(10, 260)
-$rtbResults.Size = New-Object System.Drawing.Size(570, 210)
-$rtbResults.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
-$rtbResults.ReadOnly = $true
-
-try {
-    $fontFamily = Get-AppSetting -Name "ResultsFontFamily"
-    $fontSize = Get-AppSetting -Name "ResultsFontSize"
-    
-    # Verify font family is valid
-    if ([string]::IsNullOrEmpty($fontFamily)) {
-        $fontFamily = "Consolas" # Default fallback
-    }
-    
-    # Check if the font family actually exists on the system
-    $fontExists = $false
-    foreach ($family in [System.Drawing.FontFamily]::Families) {
-        if ($family.Name -eq $fontFamily) {
-            $fontExists = $true
-            break
-        }
-    }
-    
-    # If the configured font doesn't exist, use a system font that should be available
-    if (-not $fontExists) {
-        $fontFamily = "Arial" # Widely available system font
-    }
-    
-    # Ensure font size is valid
-    if ($null -eq $fontSize -or -not ($fontSize -is [int]) -or $fontSize -lt 8 -or $fontSize -gt 72) {
-        $fontSize = 9 # Default fallback size
-    }
-    
-    # Now create the font with validated values
-    $rtbResults.Font = New-Object System.Drawing.Font($fontFamily, $fontSize)
-}
-catch {
-    # If anything goes wrong, use a basic system font
-    Write-Host "Error setting custom font: $_" -ForegroundColor Yellow
-    $rtbResults.Font = New-Object System.Drawing.Font("Arial", 9)
-}
-$rtbResults.BackColor = [System.Drawing.Color]::White
-$rtbResults.MultiLine = $true
-$rtbResults.ScrollBars = "Both"
-$rtbResults.WordWrap = $false
-$rtbResults.Name = "SearchResultsTextBox"
-$panel.Controls.Add($rtbResults)
-
-# Add panel to tab page
-$TabPage.Controls.Add($panel)
-}
-
-function Setup-ExtractTab {
-param(
-[Parameter(Mandatory=$true)]
-[System.Windows.Forms.TabPage]$TabPage
-)
-
-# Create container panel
-$panel = New-Object System.Windows.Forms.Panel
-$panel.Dock = "Fill"
-$panel.Padding = New-Object System.Windows.Forms.Padding(10)
-
-# Create CAB files list
-$lblCabFiles = New-Object System.Windows.Forms.Label
-$lblCabFiles.Location = New-Object System.Drawing.Point(10, 20)
-$lblCabFiles.Size = New-Object System.Drawing.Size(150, 20)
-$lblCabFiles.Text = "CAB Files:"
-$panel.Controls.Add($lblCabFiles)
-
-$lstCabFiles = New-Object System.Windows.Forms.ListBox
-$lstCabFiles.Location = New-Object System.Drawing.Point(10, 40)
-$lstCabFiles.Size = New-Object System.Drawing.Size(450, 150)
-$lstCabFiles.SelectionMode = "MultiExtended"
-$lstCabFiles.Name = "CabFilesList"
-$panel.Controls.Add($lstCabFiles)
-
-# Create extraction options
-$grpOptions = New-Object System.Windows.Forms.GroupBox
-$grpOptions.Location = New-Object System.Drawing.Point(10, 200)
-$grpOptions.Size = New-Object System.Drawing.Size(450, 60)
-$grpOptions.Text = "Extraction Options"
-$panel.Controls.Add($grpOptions)
-
-$chkSkipExisting = New-Object System.Windows.Forms.CheckBox
-$chkSkipExisting.Location = New-Object System.Drawing.Point(10, 20)
-$chkSkipExisting.Size = New-Object System.Drawing.Size(200, 20)
-$chkSkipExisting.Text = "Skip Existing Extractions"
-$chkSkipExisting.Checked = (Get-AppSetting -Name "SkipExistingCabExtracts")
-$grpOptions.Controls.Add($chkSkipExisting)
-
-# Create extraction buttons
-$btnExtractSelected = New-Object System.Windows.Forms.Button
-$btnExtractSelected.Location = New-Object System.Drawing.Point(10, 270)
-$btnExtractSelected.Size = New-Object System.Drawing.Size(150, 30)
-$btnExtractSelected.Text = "Extract Selected"
-$btnExtractSelected.Add_Click({
-if ($lstCabFiles.SelectedItems.Count -eq 0) {
-    [System.Windows.MessageBox]::Show("Please select at least one CAB file to extract!", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-    return
-}
-
-# Get output path from analysis tab
-$txtOutput = $script:MainForm.Controls["MainTabControl"].TabPages["AnalysisTab"].Controls["OutputPath"]
-
-# Update status
-$statusLabel = $script:MainForm.Controls["StatusStrip"].Items["StatusLabel"]
-$statusLabel.Text = "Extracting CAB files..."
-$rtbResults.Clear()
-$rtbResults.AppendText("Extracting $($lstCabFiles.SelectedItems.Count) selected CAB files...$([Environment]::NewLine)")
-
-# Disable buttons during extraction
-$btnExtractSelected.Enabled = $false
-$btnExtractAll.Enabled = $false
-
-# Get selected CAB files
-$selectedCabs = @()
-foreach ($item in $lstCabFiles.SelectedItems) {
-    $cab = $script:AnalysisResults.CabFiles | Where-Object { $_.RelativePath -eq $item } | Select-Object -First 1
-    if ($null -ne $cab) {
-        $selectedCabs += $cab
-    }
-}
-
-# Extraction parameters
-$extractParams = @{
-    AnalysisResults = @{
-        CabFiles = $selectedCabs
-    }
-    SkipExisting = $chkSkipExisting.Checked
-}
-
-# Start background job
-Start-ThreadJob -ScriptBlock {
-    param($params)
-    # Load required modules
-    . (Join-Path -Path $using:PSScriptRoot -ChildPath "..\Core\CabExtractor.ps1")
-    . (Join-Path -Path $using:PSScriptRoot -ChildPath "..\Utils\Logging.ps1")
-    
-    # Execute extraction
-    $extractionResults = Expand-AnalysisCabFiles @params
-    return $extractionResults
-} -ArgumentList $extractParams -StreamingHost $Host | Out-Null
-
-# Timer to check job progress
-$timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 1000
-$timer.Add_Tick({
-    $job = Get-Job -State Running | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
-    
-    if ($null -eq $job) {
-        # Job completed, get results
-        $job = Get-Job -State Completed | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
-        
-        if ($null -ne $job) {
-            $extractionResults = Receive-Job -Job $job
-            $job | Remove-Job
-            
-            # Update UI with results
-            $rtbResults.AppendText("Extraction complete.$([Environment]::NewLine)")
-            $rtbResults.AppendText("$($extractionResults.ExtractedCount) files extracted.$([Environment]::NewLine)")
-            $rtbResults.AppendText("$($extractionResults.SkippedCount) files skipped.$([Environment]::NewLine)")
-            $rtbResults.AppendText("$($extractionResults.FailedCount) files failed.$([Environment]::NewLine)$([Environment]::NewLine)")
-            
-            foreach ($result in $extractionResults.Results) {
-                $rtbResults.AppendText("$($result.CabPath): $($result.Message)$([Environment]::NewLine)")
-            }
-            
-            # Update CAB files in analysis results
-            foreach ($cab in $selectedCabs) {
-                $resultForCab = $extractionResults.Results | Where-Object { $_.CabPath -eq $cab.Path } | Select-Object -First 1
-                if ($null -ne $resultForCab) {
-                    $cab.Processed = $true
-                    $cab.ExtractedPath = $resultForCab.ExtractedPath
-                    $cab.ExtractionSuccess = $resultForCab.Success
-                    $cab.ExtractionMessage = $resultForCab.Message
-                }
-            }
-            
-            # Enable buttons
-            $btnExtractSelected.Enabled = $true
-            $btnExtractAll.Enabled = $true
-            
-            # Update status
-            $statusLabel.Text = "Extraction complete. $($extractionResults.ExtractedCount) extracted, $($extractionResults.SkippedCount) skipped, $($extractionResults.FailedCount) failed."
-        }
-        else {
-            # No completed job found
-            $rtbResults.AppendText("Extraction failed.$([Environment]::NewLine)")
-            $btnExtractSelected.Enabled = $true
-            $btnExtractAll.Enabled = $true
-            $statusLabel.Text = "Extraction failed."
-        }
-        
-        $timer.Stop()
-        $timer.Dispose()
-    }
-})
-$timer.Start()
-})
-$panel.Controls.Add($btnExtractSelected)
-
-$btnExtractAll = New-Object System.Windows.Forms.Button
-$btnExtractAll.Location = New-Object System.Drawing.Point(170, 270)
-$btnExtractAll.Size = New-Object System.Drawing.Size(150, 30)
-$btnExtractAll.Text = "Extract All"
-$btnExtractAll.Name = "ExtractAllButton"
-$btnExtractAll.Add_Click({
-if ($script:AnalysisResults.CabFiles.Count -eq 0) {
-    [System.Windows.MessageBox]::Show("No CAB files found to extract!", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-    return
-}
-
-# Update status
-$statusLabel = $script:MainForm.Controls["StatusStrip"].Items["StatusLabel"]
-$statusLabel.Text = "Extracting all CAB files..."
-$rtbResults.Clear()
-$rtbResults.AppendText("Extracting all $($script:AnalysisResults.CabFiles.Count) CAB files...$([Environment]::NewLine)")
-
-# Disable buttons during extraction
-$btnExtractSelected.Enabled = $false
-$btnExtractAll.Enabled = $false
-
-# Extraction parameters
-$extractParams = @{
-    AnalysisResults = $script:AnalysisResults
-    SkipExisting = $chkSkipExisting.Checked
-}
-
-# Start background job
-Start-ThreadJob -ScriptBlock {
-    param($params)
-    # Load required modules
-    . (Join-Path -Path $using:PSScriptRoot -ChildPath "..\Core\CabExtractor.ps1")
-    . (Join-Path -Path $using:PSScriptRoot -ChildPath "..\Utils\Logging.ps1")
-    
-    # Execute extraction
-    $extractionResults = Expand-AnalysisCabFiles @params
-    return $extractionResults
-} -ArgumentList $extractParams -StreamingHost $Host | Out-Null
-
-# Timer to check job progress
-$timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 1000
-$timer.Add_Tick({
-    $job = Get-Job -State Running | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
-    
-    if ($null -eq $job) {
-        # Job completed, get results
-        $job = Get-Job -State Completed | Where-Object { $_.Name -like "ThreadJob*" } | Select-Object -First 1
-        
-        if ($null -ne $job) {
-            $extractionResults = Receive-Job -Job $job
-            $job | Remove-Job
-            
-            # Update UI with results
-            $rtbResults.AppendText("Extraction complete.$([Environment]::NewLine)")
-            $rtbResults.AppendText("$($extractionResults.ExtractedCount) files extracted.$([Environment]::NewLine)")
-            $rtbResults.AppendText("$($extractionResults.SkippedCount) files skipped.$([Environment]::NewLine)")
-            $rtbResults.AppendText("$($extractionResults.FailedCount) files failed.$([Environment]::NewLine)$([Environment]::NewLine)")
-            
-            foreach ($result in $extractionResults.Results) {
-                $rtbResults.AppendText("$($result.CabPath): $($result.Message)$([Environment]::NewLine)")
-            }
-            
-            # Enable buttons
-            $btnExtractSelected.Enabled = $true
-            $btnExtractAll.Enabled = $true
-            
-            # Update status
-            $statusLabel.Text = "Extraction complete. $($extractionResults.ExtractedCount) extracted, $($extractionResults.SkippedCount) skipped, $($extractionResults.FailedCount) failed."
-        }
-        else {
-            # No completed job found
-            $rtbResults.AppendText("Extraction failed.$([Environment]::NewLine)")
-            $btnExtractSelected.Enabled = $true
-            $btnExtractAll.Enabled = $true
-            $statusLabel.Text = "Extraction failed."
-        }
-        
-        $timer.Stop()
-        $timer.Dispose()
-    }
-})
-$timer.Start()
-})
-$panel.Controls.Add($btnExtractAll)
-
-# Create results area
-$rtbResults = New-Object System.Windows.Forms.RichTextBox
-$rtbResults.Location = New-Object System.Drawing.Point(10, 310)
-$rtbResults.Size = New-Object System.Drawing.Size(570, 160)
-$rtbResults.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
-$rtbResults.ReadOnly = $true
-
-try {
-    $fontFamily = Get-AppSetting -Name "ResultsFontFamily"
-    $fontSize = Get-AppSetting -Name "ResultsFontSize"
-    
-    # Verify font family is valid
-    if ([string]::IsNullOrEmpty($fontFamily)) {
-        $fontFamily = "Consolas" # Default fallback
-    }
-    
-    # Check if the font family actually exists on the system
-    $fontExists = $false
-    foreach ($family in [System.Drawing.FontFamily]::Families) {
-        if ($family.Name -eq $fontFamily) {
-            $fontExists = $true
-            break
-        }
-    }
-    
-    # If the configured font doesn't exist, use a system font that should be available
-    if (-not $fontExists) {
-        $fontFamily = "Arial" # Widely available system font
-    }
-    
-    # Ensure font size is valid
-    if ($null -eq $fontSize -or -not ($fontSize -is [int]) -or $fontSize -lt 8 -or $fontSize -gt 72) {
-        $fontSize = 9 # Default fallback size
-    }
-    
-    # Now create the font with validated values
-    $rtbResults.Font = New-Object System.Drawing.Font($fontFamily, $fontSize)
-}
-catch {
-    # If anything goes wrong, use a basic system font
-    Write-Host "Error setting custom font: $_" -ForegroundColor Yellow
-    $rtbResults.Font = New-Object System.Drawing.Font("Arial", 9)
-}
-$rtbResults.BackColor = [System.Drawing.Color]::White
-$rtbResults.MultiLine = $true
-$rtbResults.ScrollBars = "Both"
-$rtbResults.WordWrap = $false
-$panel.Controls.Add($rtbResults)
-
-# Add panel to tab page
-$TabPage.Controls.Add($panel)
-}
-
-function Setup-SettingsTab {
-param(
-[Parameter(Mandatory=$true)]
-[System.Windows.Forms.TabPage]$TabPage
-)
-
-# Create container panel
-$panel = New-Object System.Windows.Forms.Panel
-$panel.Dock = "Fill"
-$panel.Padding = New-Object System.Windows.Forms.Padding(10)
-
-# Create settings groups
-$grpGeneral = New-Object System.Windows.Forms.GroupBox
-$grpGeneral.Location = New-Object System.Drawing.Point(10, 20)
-$grpGeneral.Size = New-Object System.Drawing.Size(570, 120)
-$grpGeneral.Text = "General Settings"
-$panel.Controls.Add($grpGeneral)
-
-$lblDefaultOutput = New-Object System.Windows.Forms.Label
-$lblDefaultOutput.Location = New-Object System.Drawing.Point(10, 30)
-$lblDefaultOutput.Size = New-Object System.Drawing.Size(150, 20)
-$lblDefaultOutput.Text = "Default Output Path:"
-$grpGeneral.Controls.Add($lblDefaultOutput)
-
-$txtDefaultOutput = New-Object System.Windows.Forms.TextBox
-$txtDefaultOutput.Location = New-Object System.Drawing.Point(160, 30)
-$txtDefaultOutput.Size = New-Object System.Drawing.Size(300, 20)
-$txtDefaultOutput.Text = (Get-AppSetting -Name "DefaultOutputPath")
-$grpGeneral.Controls.Add($txtDefaultOutput)
-
-$btnDefaultOutput = New-Object System.Windows.Forms.Button
-$btnDefaultOutput.Location = New-Object System.Drawing.Point(470, 30)
-$btnDefaultOutput.Size = New-Object System.Drawing.Size(80, 20)
-$btnDefaultOutput.Text = "Browse..."
-$btnDefaultOutput.Add_Click({
-$folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-$folderBrowser.Description = "Select default output folder"
-if ($folderBrowser.ShowDialog() -eq 'OK') {
-    $txtDefaultOutput.Text = $folderBrowser.SelectedPath
-}
-})
-$grpGeneral.Controls.Add($btnDefaultOutput)
-
-$lblMaxFileSize = New-Object System.Windows.Forms.Label
-$lblMaxFileSize.Location = New-Object System.Drawing.Point(10, 60)
-$lblMaxFileSize.Size = New-Object System.Drawing.Size(150, 20)
-$lblMaxFileSize.Text = "Max File Size for Search (MB):"
-$grpGeneral.Controls.Add($lblMaxFileSize)
-
-$numMaxFileSize = New-Object System.Windows.Forms.NumericUpDown
-$numMaxFileSize.Location = New-Object System.Drawing.Point(160, 60)
-$numMaxFileSize.Size = New-Object System.Drawing.Size(60, 20)
-$numMaxFileSize.Minimum = 1
-$numMaxFileSize.Maximum = 1000
-$numMaxFileSize.Value = ((Get-AppSetting -Name "MaxFileSizeForTextSearch") / 1MB)
-$grpGeneral.Controls.Add($numMaxFileSize)
-
-$lblLogLevel = New-Object System.Windows.Forms.Label
-$lblLogLevel.Location = New-Object System.Drawing.Point(10, 90)
-$lblLogLevel.Size = New-Object System.Drawing.Size(150, 20)
-$lblLogLevel.Text = "Logging Level:"
-$grpGeneral.Controls.Add($lblLogLevel)
-
-$cboLogLevel = New-Object System.Windows.Forms.ComboBox
-$cboLogLevel.Location = New-Object System.Drawing.Point(160, 90)
-$cboLogLevel.Size = New-Object System.Drawing.Size(120, 20)
-$cboLogLevel.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-
-# Add log levels to the dropdown
-$cboLogLevel.Items.Add("DEBUG")
-$cboLogLevel.Items.Add("INFO")
-$cboLogLevel.Items.Add("WARNING")
-$cboLogLevel.Items.Add("ERROR")
-
-# Set current value based on settings
-$currentLogLevel = Get-AppSetting -Name "LogLevelName"
-if ([string]::IsNullOrEmpty($currentLogLevel)) {
-    $currentLogLevel = "INFO"
-}
-
-$levelIndex = $cboLogLevel.Items.IndexOf($currentLogLevel)
-if ($levelIndex -ge 0) {
-    $cboLogLevel.SelectedIndex = $levelIndex
-} else {
-    $cboLogLevel.SelectedIndex = 1  # Default to INFO (index 1)
-}
-
-$grpGeneral.Controls.Add($cboLogLevel)
-
-$grpUI = New-Object System.Windows.Forms.GroupBox
-$grpUI.Location = New-Object System.Drawing.Point(10, 150)
-$grpUI.Size = New-Object System.Drawing.Size(570, 120)
-$grpUI.Text = "UI Settings"
-$panel.Controls.Add($grpUI)
-
-$lblFontFamily = New-Object System.Windows.Forms.Label
-$lblFontFamily.Location = New-Object System.Drawing.Point(10, 30)
-$lblFontFamily.Size = New-Object System.Drawing.Size(150, 20)
-$lblFontFamily.Text = "Results Font Family:"
-$grpUI.Controls.Add($lblFontFamily)
-
-$cboFontFamily = New-Object System.Windows.Forms.ComboBox
-$cboFontFamily.Location = New-Object System.Drawing.Point(160, 30)
-$cboFontFamily.Size = New-Object System.Drawing.Size(200, 20)
-$cboFontFamily.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-
-# Add system monospace fonts
-$fonts = [System.Drawing.FontFamily]::Families | Where-Object { $_.IsStyleAvailable([System.Drawing.FontStyle]::Regular) }
-$monospaceFonts = $fonts | Where-Object { 
     try {
-        $font = New-Object System.Drawing.Font($_.Name, 10)
-        # Get character width rather than height
-        $iWidth = [System.Windows.Forms.TextRenderer]::MeasureText("i", $font).Width
-        $WWidth = [System.Windows.Forms.TextRenderer]::MeasureText("W", $font).Width
-        $result = ($iWidth -eq $WWidth)
-        $font.Dispose()
-        $result
+        Write-Log -Message "Initializing main window" -Level INFO -Component "GUI"
+        $form = Initialize-MainWindow -PowerShellPath $PowerShellPath
+        
+        if ($null -eq $form) {
+            throw "Failed to initialize main window"
+        }
+        
+        Write-Log -Message "Showing main window" -Level INFO -Component "GUI"
+        [void]$form.ShowDialog()
     }
     catch {
-        # Skip fonts that cause errors
-        $false
+        Write-Log -Message "Error showing main window: $_" -Level ERROR -Component "GUI"
+        throw
     }
-} | Select-Object -ExpandProperty Name
-
-foreach ($font in $monospaceFonts) {
-$cboFontFamily.Items.Add($font)
 }
 
-# Set current value
-$currentFont = Get-AppSetting -Name "ResultsFontFamily"
-$fontIndex = $cboFontFamily.Items.IndexOf($currentFont)
-if ($fontIndex -ge 0) {
-$cboFontFamily.SelectedIndex = $fontIndex
-}
-else {
-$cboFontFamily.SelectedIndex = $cboFontFamily.Items.IndexOf("Consolas")
-}
-
-$grpUI.Controls.Add($cboFontFamily)
-
-$lblFontSize = New-Object System.Windows.Forms.Label
-$lblFontSize.Location = New-Object System.Drawing.Point(10, 60)
-$lblFontSize.Size = New-Object System.Drawing.Size(150, 20)
-$lblFontSize.Text = "Results Font Size:"
-$grpUI.Controls.Add($lblFontSize)
-
-$numFontSize = New-Object System.Windows.Forms.NumericUpDown
-$numFontSize.Location = New-Object System.Drawing.Point(160, 60)
-$numFontSize.Size = New-Object System.Drawing.Size(60, 20)
-$numFontSize.Minimum = 8
-$numFontSize.Maximum = 16
-$numFontSize.Value = (Get-AppSetting -Name "ResultsFontSize")
-$grpUI.Controls.Add($numFontSize)
-
-# Save settings button
-$btnSaveSettings = New-Object System.Windows.Forms.Button
-$btnSaveSettings.Location = New-Object System.Drawing.Point(10, 280)
-$btnSaveSettings.Size = New-Object System.Drawing.Size(150, 30)
-$btnSaveSettings.Text = "Save Settings"
-$btnSaveSettings.Add_Click({
-    # Update settings
-    Set-AppSetting -Name "DefaultOutputPath" -Value $txtDefaultOutput.Text
-    Set-AppSetting -Name "MaxFileSizeForTextSearch" -Value ($numMaxFileSize.Value * 1MB)
-    Set-AppSetting -Name "ResultsFontFamily" -Value $cboFontFamily.SelectedItem
-    Set-AppSetting -Name "ResultsFontSize" -Value $numFontSize.Value
+# Helper function to update the status strip
+function Update-Status {
+    param([string]$Message)
     
-    if ($null -ne $cboLogLevel.SelectedItem) {
-        $selectedLogLevel = $cboLogLevel.SelectedItem.ToString()
-        Set-AppSetting -Name "LogLevelName" -Value $selectedLogLevel
-        
-        # Update the active log level
-        try {
-            Set-LogLevel -Level $selectedLogLevel
-        } catch {
-            Write-Host "Note: Log level will be applied on next application start"
+    if ($null -ne $script:MainForm) {
+        $statusLabel = $script:MainForm.Controls["StatusStrip"].Items["StatusLabel"]
+        if ($null -ne $statusLabel) {
+            $statusLabel.Text = $Message
         }
     }
-
-    # Save settings to file
-    $success = Save-AppSettings
-
-    if ($success) {
-        [System.Windows.MessageBox]::Show("Settings saved successfully. Some changes may require restarting the application.", "Settings Saved", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
-    }
-    else {
-        [System.Windows.MessageBox]::Show("Failed to save settings.", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-    }
-})
-
-$panel.Controls.Add($btnSaveSettings)
-
-# Add panel to tab page
-$TabPage.Controls.Add($panel)
 }
 
-function Setup-AboutTab {
-param(
-[Parameter(Mandatory=$true)]
-[System.Windows.Forms.TabPage]$TabPage
-)
-
-# Create container panel
-$panel = New-Object System.Windows.Forms.Panel
-$panel.Dock = "Fill"
-$panel.Padding = New-Object System.Windows.Forms.Padding(10)
-
-# Create about information
-$lblAppName = New-Object System.Windows.Forms.Label
-$lblAppName.Location = New-Object System.Drawing.Point(10, 20)
-$lblAppName.Size = New-Object System.Drawing.Size(570, 30)
-$lblAppName.Text = "DiagLog Analyzer"
-$lblAppName.Font = New-Object System.Drawing.Font($lblAppName.Font.FontFamily, 16, [System.Drawing.FontStyle]::Bold)
-$panel.Controls.Add($lblAppName)
-
-$lblVersion = New-Object System.Windows.Forms.Label
-$lblVersion.Location = New-Object System.Drawing.Point(10, 50)
-$lblVersion.Size = New-Object System.Drawing.Size(570, 20)
-$lblVersion.Text = "Version " + (Get-AppSetting -Name "Version")
-$panel.Controls.Add($lblVersion)
-
-$lblDescription = New-Object System.Windows.Forms.Label
-$lblDescription.Location = New-Object System.Drawing.Point(10, 80)
-$lblDescription.Size = New-Object System.Drawing.Size(570, 40)
-$lblDescription.Text = "A PowerShell-based application for analyzing diagnostic log files, with a focus on handling complex diagnostic data capture structures."
-$panel.Controls.Add($lblDescription)
-
-$lblFeatures = New-Object System.Windows.Forms.Label
-$lblFeatures.Location = New-Object System.Drawing.Point(10, 130)
-$lblFeatures.Size = New-Object System.Drawing.Size(570, 20)
-$lblFeatures.Text = "Features:"
-$lblFeatures.Font = New-Object System.Drawing.Font($lblFeatures.Font.FontFamily, $lblFeatures.Font.Size, [System.Drawing.FontStyle]::Bold)
-$panel.Controls.Add($lblFeatures)
-
-$txtFeatures = New-Object System.Windows.Forms.TextBox
-$txtFeatures.Location = New-Object System.Drawing.Point(10, 150)
-$txtFeatures.Size = New-Object System.Drawing.Size(570, 100)
-$txtFeatures.Multiline = $true
-$txtFeatures.ReadOnly = $true
-$txtFeatures.ScrollBars = "Vertical"
-$txtFeatures.Text = @"
-- Folder Structure Analysis: Quickly scan and understand complex diagnostic log directory structures
-- Intelligent CAB Extraction: Automatically extract CAB files while preserving their context
-- Smart Content Search: Search across multiple files with filtering by file type
-- Visual Reporting: Generate interactive HTML reports of analysis findings and search results
-- Intuitive GUI Interface: Easy-to-use interface that guides users through the analysis process
-"@
-    $panel.Controls.Add($txtFeatures)
+# Helper function to enable/disable tabs based on analysis state
+function Update-TabStates {
+    param([bool]$AnalysisCompleted)
     
-    $lblLogPath = New-Object System.Windows.Forms.Label
-    $lblLogPath.Location = New-Object System.Drawing.Point(10, 260)
-    $lblLogPath.Size = New-Object System.Drawing.Size(150, 20)
-    $lblLogPath.Text = "Log File:"
-    $panel.Controls.Add($lblLogPath)
-    
-    $txtLogPath = New-Object System.Windows.Forms.TextBox
-    $txtLogPath.Location = New-Object System.Drawing.Point(160, 260)
-    $txtLogPath.Size = New-Object System.Drawing.Size(320, 20)
-    $txtLogPath.ReadOnly = $true
-    $txtLogPath.Text = (Get-LogFile)
-    $panel.Controls.Add($txtLogPath)
-    
-    $btnOpenLog = New-Object System.Windows.Forms.Button
-    $btnOpenLog.Location = New-Object System.Drawing.Point(490, 260)
-    $btnOpenLog.Size = New-Object System.Drawing.Size(90, 20)
-    $btnOpenLog.Text = "Open Log"
-    $btnOpenLog.Add_Click({
-        $logFile = Get-LogFile
-        if (Test-Path $logFile) {
-            Start-Process $logFile
+    if ($null -ne $script:MainForm) {
+        $tabControl = $script:MainForm.Controls["MainTabControl"]
+        if ($null -ne $tabControl) {
+            $tabControl.TabPages["SearchTab"].Enabled = $AnalysisCompleted
+            $tabControl.TabPages["ExtractTab"].Enabled = $AnalysisCompleted
         }
-        else {
-            [System.Windows.MessageBox]::Show("Log file not found.", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-        }
-    })
-    $panel.Controls.Add($btnOpenLog)
-    
-    $lblCopyright = New-Object System.Windows.Forms.Label
-    $lblCopyright.Location = New-Object System.Drawing.Point(10, 300)
-    $lblCopyright.Size = New-Object System.Drawing.Size(570, 20)
-    $lblCopyright.Text = "© " + (Get-Date).Year + ". All rights reserved."
-    $lblCopyright.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $panel.Controls.Add($lblCopyright)
-    
-    # Add panel to tab page
-    $TabPage.Controls.Add($panel)
+    }
 }
 
 --------------------
 
-### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Utils\FileSystem.ps1 ###
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\GUI\Panels.ps1 ###
+. (Join-Path -Path $PSScriptRoot -ChildPath "Controls.ps1")
+. (Join-Path -Path $PSScriptRoot -ChildPath "EventHandlers.ps1")
+. (Join-Path -Path $PSScriptRoot -ChildPath "Helpers.ps1")
+
+# Panel creation functions
+
+function New-AnalysisPanel {
+    $panel = New-Object System.Windows.Forms.Panel
+    $panel.Dock = "Fill"
+    $panel.Padding = New-Object System.Windows.Forms.Padding(10)
+
+    # Source folder controls
+    $panel.Controls.Add((New-SourcePathControls))
+
+    # Analysis options
+    $panel.Controls.Add((New-AnalysisOptionsGroup))
+
+    # Action buttons
+    $panel.Controls.Add((New-ActionButtonsGroup))
+
+    # Results area
+    $panel.Controls.Add((New-ResultsTextBox))
+
+    return $panel
+}
+
+function New-SearchPanel {
+    $panel = New-Object System.Windows.Forms.Panel
+    $panel.Dock = "Fill"
+    $panel.Padding = New-Object System.Windows.Forms.Padding(10)
+
+    # Search controls
+    $panel.Controls.Add((New-SearchControls))
+    
+    # File type filter
+    $panel.Controls.Add((New-FileTypeFilter))
+    
+    # Results area
+    $panel.Controls.Add((New-ResultsTextBox))
+
+    return $panel
+}
+
+# ... Add other panel creation functions
+
+--------------------
+
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\GUI\TabControls.ps1 ###
+# Tab Controls Module
+
+function New-TabControl {
+    $tabControl = New-Object System.Windows.Forms.TabControl
+    $tabControl.Dock = "Fill"
+    $tabControl.Name = "MainTabControl"
+    
+    $tabControl.TabPages.AddRange(@(
+        (New-AnalysisTab),
+        (New-SearchTab),
+        (New-ExtractTab),
+        (New-SettingsTab),
+        (New-AboutTab)
+    ))
+    
+    return $tabControl
+}
+
+function New-AnalysisTab {
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = "Analysis"
+    $tab.Name = "AnalysisTab"
+    
+    # Add controls
+    $panel = New-AnalysisPanel
+    $tab.Controls.Add($panel)
+    
+    return $tab
+}
+
+function New-SearchTab {
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = "Search"
+    $tab.Name = "SearchTab"
+    $tab.Enabled = $false
+    
+    # Add controls
+    $panel = New-SearchPanel
+    $tab.Controls.Add($panel)
+    
+    return $tab
+}
+
+# ... Continue with other tab creation functions
+
+--------------------
+
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Utils\FileSystem.psm1 ###
 # DiagLog Analyzer - File System Utilities
 # This module provides file system related functions
 
 # Import dependencies
-. (Join-Path -Path $PSScriptRoot -ChildPath "Logging.ps1")
+try {
+    $loggingPath = Join-Path -Path $PSScriptRoot -ChildPath "Logging.psm1"
+    if (Test-Path $loggingPath) {
+        Import-Module $loggingPath -Force -ErrorAction Stop
+    } else {
+        throw "Logging module not found at: $loggingPath"
+    }
+} catch {
+    Write-Error "Failed to import required module: $_"
+    exit 1
+}
 
 function Test-CabFile {
     param (
@@ -3269,154 +2431,138 @@ function Get-SafeFilePath {
 
 --------------------
 
-### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Utils\Logging.ps1 ###
+### File: C:\Users\OlavHeggelund\Documents\DiagLogAnalyserApp\DiagLogAnalyserApp\src\Utils\Logging.psm1 ###
 # DiagLog Analyzer - Logging Utility
 # This module provides logging functionality for the application
 
-# Import dependencies
-. (Join-Path -Path $PSScriptRoot -ChildPath "..\Config\Settings.ps1")
+# Import settings module
+$settingsModule = Join-Path -Path $PSScriptRoot -ChildPath "..\Config\Settings.psm1"
+Import-Module $settingsModule -Force
 
-# Log levels
-enum LogLevel {
+# Script variables
+$script:LogInitialized = $false
+$script:LogFile = $null
+$script:LogLevel = @{
     DEBUG = 0
     INFO = 1
     WARNING = 2
     ERROR = 3
 }
 
-# Current log level - anything below this will not be logged
-$script:CurrentLogLevel = [LogLevel]::INFO
-
-# Current log file
-$script:CurrentLogFile = $null
-
-function Initialize-Logging {
-    param (
-        [LogLevel]$LogLevel = [LogLevel]::INFO
-    )
+function Initialize-DLALogging {
+    [CmdletBinding()]
+    param()
     
-    # Try to use log level from settings
     try {
-        $logLevelName = Get-AppSetting -Name "LogLevelName"
-        if (-not [string]::IsNullOrEmpty($logLevelName)) {
-            $LogLevel = [LogLevel]::$logLevelName
+        $logPath = Get-DLASetting -Name "LogPath"
+        $logDir = Split-Path -Parent $logPath
+        
+        if (-not (Test-Path $logDir)) {
+            New-Item -Path $logDir -ItemType Directory -Force | Out-Null
         }
-    } catch {
-        # Silently fall back to default if there's an error
+        
+        $script:LogFile = $logPath
+        $script:LogInitialized = $true
+        
+        Write-Verbose "Logging initialized to: $logPath"
+        return $true
     }
-    
-    $script:CurrentLogLevel = $LogLevel
-    
-    # Create log directory if it doesn't exist
-    $logPath = Get-AppSetting -Name "LogPath"
-    if (-not (Test-Path -Path $logPath)) {
-        New-Item -Path $logPath -ItemType Directory -Force | Out-Null
+    catch {
+        Write-Error "Failed to initialize logging: $_"
+        return $false
     }
-    
-    # Create a new log file with timestamp
-    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $logFileName = "DiagLogAnalyzer-$timestamp.log"
-    $script:CurrentLogFile = Join-Path -Path $logPath -ChildPath $logFileName
-    
-    # Write header to log file
-    $header = @"
-# DiagLog Analyzer Log File
-# Started: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-# Log Level: $LogLevel
-# ----------------------------------------
-"@
-    
-    $header | Out-File -FilePath $script:CurrentLogFile -Encoding utf8
-    
-    Write-Log -Message "Logging initialized" -Level INFO
 }
 
-function Write-Log {
-    param (
+function Write-DLALog {
+    [CmdletBinding()]
+    param(
         [Parameter(Mandatory=$true)]
         [string]$Message,
         
-        [LogLevel]$Level = [LogLevel]::INFO,
+        [Parameter()]
+        [ValidateSet('DEBUG', 'INFO', 'WARNING', 'ERROR')]
+        [string]$Level = 'INFO',
         
-        [string]$Component = "General"
+        [Parameter()]
+        [string]$Component = 'General',
+        
+        [Parameter()]
+        [System.Management.Automation.ErrorRecord]$ErrorRecord,
+        
+        [Parameter()]
+        [switch]$NoWrite
     )
     
-    # Skip if log level is below current
-    if ([int]$Level -lt [int]$script:CurrentLogLevel) {
-        return
+    if (-not $script:LogInitialized) {
+        Initialize-DLALogging
     }
     
-    # Ensure log file is initialized
-    if ($null -eq $script:CurrentLogFile) {
-        try {
-            Initialize-Logging
-        }
-        catch {
-            # If initialization fails, create a basic log file
-            $script:CurrentLogFile = Join-Path -Path $env:TEMP -ChildPath "DiagLogAnalyzer-fallback.log"
-            "# DiagLog Analyzer - Fallback Log" | Out-File -FilePath $script:CurrentLogFile -Encoding utf8
-            "# Error initializing proper logging: $_" | Out-File -FilePath $script:CurrentLogFile -Append -Encoding utf8
-        }
-    }
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "$timestamp [$Level] [$Component] $Message"
     
-    # Format log entry
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
-    $logEntry = "[$timestamp] [$Level] [$Component] $Message"
+    # Add to log file
+    $logEntry | Add-Content -Path $script:LogFile -Encoding UTF8
     
-    # Write to log file
-    try {
-        $logEntry | Out-File -FilePath $script:CurrentLogFile -Append -Encoding utf8
-    }
-    catch {
-        # If writing to log file fails, try writing to a fallback location
-        try {
-            $fallbackLog = Join-Path -Path $env:TEMP -ChildPath "DiagLogAnalyzer-fallback.log"
-            $logEntry + " (Error writing to main log: $_)" | Out-File -FilePath $fallbackLog -Append -Encoding utf8
-        }
-        catch {
-            # Last resort: just output to console
-            Write-Host "Failed to write to any log: $logEntry" -ForegroundColor Red
-        }
-    }
-    
-    # Also write to console for certain levels
-    if ([int]$Level -ge [int][LogLevel]::WARNING) {
+    # Output to console with appropriate stream
+    if (-not $NoWrite) {
         switch ($Level) {
-            ([LogLevel]::WARNING) { Write-Warning $Message }
-            ([LogLevel]::ERROR) { Write-Error $Message }
-            default { Write-Host $logEntry }
+            'ERROR' { 
+                Write-Error $logEntry
+                if ($ErrorRecord) {
+                    Write-Error $ErrorRecord
+                }
+            }
+            'WARNING' { Write-Warning $logEntry }
+            'INFO' { Write-Verbose $logEntry -Verbose }
+            'DEBUG' { Write-Debug $logEntry }
+        }
+    }
+    
+    # If there's an error record, log the stack trace
+    if ($ErrorRecord) {
+        $stackTrace = $ErrorRecord.ScriptStackTrace
+        if (-not [string]::IsNullOrEmpty($stackTrace)) {
+            $stackEntry = "$timestamp [$Level] [$Component] $stackTrace"
+            $stackEntry | Add-Content -Path $script:LogFile -Encoding UTF8
+            
+            if (-not $NoWrite) {
+                Write-Error $stackTrace
+            }
         }
     }
 }
 
-function Get-LogFile {
-    return $script:CurrentLogFile
+function Get-DLALogFile {
+    return $script:LogFile
 }
 
-function Set-LogLevel {
-    param (
-        [Parameter(Mandatory=$true)]
-        [object]$Level
-    )
-    
-    if ($Level -is [string]) {
-        # Convert string to enum
-        try {
-            $Level = [LogLevel]::$Level
-        }
-        catch {
-            Write-Warning "Invalid log level string: $Level. Defaulting to INFO."
-            $Level = [LogLevel]::INFO
-        }
+function Clear-DLALog {
+    if (Test-Path $script:LogFile) {
+        Clear-Content -Path $script:LogFile
+        Write-DLALog -Message "Log file cleared" -Level INFO -NoWrite
     }
-    elseif ($Level -isnot [LogLevel]) {
-        Write-Warning "Invalid log level type. Defaulting to INFO."
-        $Level = [LogLevel]::INFO
-    }
-    
-    $script:CurrentLogLevel = $Level
-    Write-Log -Message "Log level changed to $Level" -Level INFO
 }
+
+# Convenience functions for different log levels
+function Write-DLADebug { param([string]$Message) Write-DLALog -Message $Message -Level DEBUG }
+function Write-DLAInfo { param([string]$Message) Write-DLALog -Message $Message -Level INFO }
+function Write-DLAWarning { param([string]$Message) Write-DLALog -Message $Message -Level WARNING }
+function Write-DLAError { 
+    param(
+        [string]$Message,
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
+    ) 
+    Write-DLALog -Message $Message -Level ERROR -ErrorRecord $ErrorRecord
+}
+
+Export-ModuleMember -Function Initialize-DLALogging, 
+                            Write-DLALog,
+                            Write-DLADebug,
+                            Write-DLAInfo,
+                            Write-DLAWarning,
+                            Write-DLAError,
+                            Get-DLALogFile,
+                            Clear-DLALog
 
 --------------------
 
@@ -3948,70 +3094,3 @@ function New-SearchReport {
             $htmlResults += @"
             </div>
 "@
-        }
-        
-        $htmlResults += @"
-        </div>
-    </div>
-"@
-    }
-    
-    # If no results, add message
-    if ($matchingResults.Count -eq 0) {
-        $htmlResults += @"
-    <div class="file-result">
-        <p>No matches found for the search term.</p>
-    </div>
-"@
-    }
-    
-    # Create skipped files section
-    $htmlSkipped = ""
-    
-    $skippedResults = $SearchResults.Results | Where-Object { $_.Skipped }
-    
-    if ($skippedResults.Count -gt 0) {
-        $htmlSkipped = @"
-    <h2 class="collapsible" onclick="toggleCollapsible(this)">Skipped Files ($($skippedResults.Count))</h2>
-    <div class="content">
-        <table>
-            <tr>
-                <th>File</th>
-                <th>Reason</th>
-            </tr>
-"@
-        
-        foreach ($skipped in $skippedResults) {
-            $htmlSkipped += @"
-            <tr>
-                <td class="file-path">$($skipped.FilePath)</td>
-                <td>$($skipped.SkipReason)</td>
-            </tr>
-"@
-        }
-        
-        $htmlSkipped += @"
-        </table>
-    </div>
-"@
-    }
-    
-    # Create HTML footer
-    $htmlFooter = @"
-</body>
-</html>
-"@
-    
-    # Combine all HTML parts
-    $htmlReport = $htmlHeader + $htmlSummary + $htmlResults + $htmlSkipped + $htmlFooter
-    
-    # Save the HTML report
-    $htmlReport | Out-File -FilePath $OutputPath -Encoding utf8
-    
-    Write-Log -Message "Search report saved to $OutputPath" -Level INFO -Component "Reporting"
-    
-    return $OutputPath
-}
-
---------------------
-

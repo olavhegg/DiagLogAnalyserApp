@@ -1,342 +1,499 @@
-# DiagLog Analyzer - File Search Module
-# This module handles searching through files for specific text
+# DiagLog Analyzer - FileSearch Module
+# This module implements functions for searching files in analysis results
 
-# Import dependencies using relative paths from module root
-$modulePath = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-
-# Import required modules
-Import-Module (Join-Path -Path $modulePath -ChildPath "src\Utils\Logging.psm1") -Force
-Import-Module (Join-Path -Path $modulePath -ChildPath "src\Utils\FileSystem.psm1") -Force
-Import-Module (Join-Path -Path $modulePath -ChildPath "src\Config\Settings.psm1") -Force
-
-# Function to search for text in a single file
-function Search-TextInFile {
-    param (
-        [Parameter(Mandatory=$true)]
-        [string]$FilePath,
-        
-        [Parameter(Mandatory=$true)]
-        [string]$SearchText,
-        
-        [int]$ContextLinesBefore = 2,
-        
-        [int]$ContextLinesAfter = 2,
-        
-        [switch]$CaseSensitive = $false
-    )
-    
-    try {
-        # Check if file exists
-        if (-not (Test-Path -Path $FilePath)) {
-            return $null
-        }
-        
-        # Get file size and check if it's too large
-        $fileInfo = Get-Item -Path $FilePath
-        $maxFileSize = Get-AppSetting -Name "MaxFileSizeForTextSearch"
-        
-        if ($fileInfo.Length -gt $maxFileSize) {
-            Write-Log -Message "Skipping large file ($($fileInfo.Length) bytes): $FilePath" -Level INFO -Component "FileSearch"
-            return [PSCustomObject]@{
-                FilePath = $FilePath
-                Matches = @()
-                MatchCount = 0
-                Skipped = $true
-                SkipReason = "File too large"
-            }
-        }
-        
-        # Check if it's a binary file
-        $fileType = Get-FileType -FilePath $FilePath
-        if ($fileType -ne "text") {
-            Write-Log -Message "Skipping non-text file ($fileType): $FilePath" -Level INFO -Component "FileSearch"
-            return [PSCustomObject]@{
-                FilePath = $FilePath
-                Matches = @()
-                MatchCount = 0
-                Skipped = $true
-                SkipReason = "Non-text file"
-            }
-        }
-        
-        # Read file content
-        $content = Get-Content -Path $FilePath -ErrorAction Stop
-        
-        # Prepare regex options
-        $regexOptions = [System.Text.RegularExpressions.RegexOptions]::None
-        if (-not $CaseSensitive) {
-            $regexOptions = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-        }
-        
-        # Escape the search text for regex
-        $searchPattern = [regex]::Escape($SearchText)
-        
-        # Find all matches with line numbers
-        $matchingLines = @()
-        $totalMatches = 0
-        
-        for ($i = 0; $i -lt $content.Count; $i++) {
-            $line = $content[$i]
-            
-            if ($line -match $searchPattern) {
-                $totalMatches++
-                
-                # Get context lines before
-                $beforeLines = @()
-                for ($j = [Math]::Max(0, $i - $ContextLinesBefore); $j -lt $i; $j++) {
-                    $beforeLines += [PSCustomObject]@{
-                        LineNumber = $j + 1
-                        Text = $content[$j]
-                        IsMatch = $false
-                    }
-                }
-                
-                # Current matching line
-                $matchLine = [PSCustomObject]@{
-                    LineNumber = $i + 1
-                    Text = $line
-                    IsMatch = $true
-                }
-                
-                # Get context lines after
-                $afterLines = @()
-                for ($j = $i + 1; $j -lt [Math]::Min($content.Count, $i + 1 + $ContextLinesAfter); $j++) {
-                    $afterLines += [PSCustomObject]@{
-                        LineNumber = $j + 1
-                        Text = $content[$j]
-                        IsMatch = $false
-                    }
-                }
-                
-                # Create match context object
-                $matchContext = [PSCustomObject]@{
-                    MatchLineNumber = $i + 1
-                    MatchLine = $line
-                    BeforeContext = $beforeLines
-                    AfterContext = $afterLines
-                    AllLines = ($beforeLines + $matchLine + $afterLines)
-                }
-                
-                $matchingLines += $matchContext
-                
-                # Limit results to avoid overwhelming with too many matches
-                if ($matchingLines.Count -ge 100) {
-                    Write-Log -Message "Reached maximum match limit (100) for file: $FilePath" -Level INFO -Component "FileSearch"
-                    break
-                }
-            }
-        }
-        
-        return [PSCustomObject]@{
-            FilePath = $FilePath
-            Matches = $matchingLines
-            MatchCount = $totalMatches
-            Skipped = $false
-            SkipReason = $null
-        }
-    }
-    catch {
-        Write-Log -Message "Error searching file $FilePath : $_" -Level ERROR -Component "FileSearch"
-        return [PSCustomObject]@{
-            FilePath = $FilePath
-            Matches = @()
-            MatchCount = 0
-            Skipped = $true
-            SkipReason = "Error: $_"
-        }
-    }
+# Import FileTypeHandler module if not already loaded
+if (-not (Get-Module -Name FileTypeHandler)) {
+    Import-Module -Name (Join-Path -Path $PSScriptRoot -ChildPath "FileTypeHandler.psm1") -ErrorAction SilentlyContinue
 }
 
-# Function to search for text in multiple files
-function Search-TextInFiles {
-    param (
-        [Parameter(Mandatory=$true)]
-        [string[]]$FilePaths,
-        
-        [Parameter(Mandatory=$true)]
-        [string]$SearchText,
-        
-        [string[]]$FileTypesToInclude = @(),
-        
-        [string[]]$FileTypesToExclude = @(),
-        
-        [int]$ContextLinesBefore = 2,
-        
-        [int]$ContextLinesAfter = 2,
-        
-        [switch]$CaseSensitive = $false,
-        
-        [switch]$IncludeSkipped = $false
-    )
-    
-    Write-Log -Message "Searching for '$SearchText' in $($FilePaths.Count) files" -Level INFO -Component "FileSearch"
-    
-    $results = @()
-    $fileCount = 0
-    $matchCount = 0
-    $skippedCount = 0
-    
-    foreach ($file in $FilePaths) {
-        # Check file extension against inclusion/exclusion lists
-        $extension = [System.IO.Path]::GetExtension($file).ToLower()
-        
-        if ($FileTypesToInclude.Count -gt 0 -and $extension -notin $FileTypesToInclude) {
-            $skippedCount++
-            continue
-        }
-        
-        if ($FileTypesToExclude.Count -gt 0 -and $extension -in $FileTypesToExclude) {
-            $skippedCount++
-            continue
-        }
-        
-        $fileCount++
-        
-        # Search the file
-        $searchResult = Search-TextInFile -FilePath $file -SearchText $SearchText `
-            -ContextLinesBefore $ContextLinesBefore -ContextLinesAfter $ContextLinesAfter `
-            -CaseSensitive:$CaseSensitive
-        
-        if ($null -ne $searchResult) {
-            if ($searchResult.Skipped) {
-                $skippedCount++
-                if ($IncludeSkipped) {
-                    $results += $searchResult
-                }
-            }
-            elseif ($searchResult.MatchCount -gt 0) {
-                $matchCount += $searchResult.MatchCount
-                $results += $searchResult
-            }
-        }
-    }
-    
-    Write-Log -Message "Search completed. Found $matchCount matches in $($results.Count) files. Skipped $skippedCount files." -Level INFO -Component "FileSearch"
-    
-    return [PSCustomObject]@{
-        SearchText = $SearchText
-        TotalFiles = $FilePaths.Count
-        FilesProcessed = $fileCount
-        FilesWithMatches = ($results | Where-Object { -not $_.Skipped -and $_.MatchCount -gt 0 }).Count
-        FilesSkipped = $skippedCount
-        TotalMatches = $matchCount
-        Results = $results
-    }
-}
-
-# Function to search in analysis results
+# Function to search through analysis results
 function Search-AnalysisResults {
     param (
         [Parameter(Mandatory=$true)]
-        [hashtable]$AnalysisResults,
+        [object]$AnalysisResults,
         
         [Parameter(Mandatory=$true)]
-        [string]$SearchText,
+        [string[]]$SearchTerms,
         
-        [string[]]$ExtensionsToInclude = @(),
+        [Parameter(Mandatory=$false)]
+        [string[]]$FileExtensions,
         
-        [string[]]$ExtensionsToExclude = @(),
+        [Parameter(Mandatory=$false)]
+        [switch]$CaseSensitive,
         
-        [string[]]$FileTypesToInclude = @(),
+        [Parameter(Mandatory=$false)]
+        [switch]$UseRegex,
         
-        [string[]]$FileTypesToExclude = @(),
+        [Parameter(Mandatory=$false)]
+        [switch]$MatchWholeWord,
         
-        [int]$ContextLinesBefore = 2,
+        [Parameter(Mandatory=$false)]
+        [int]$ContextLines = 3,
         
-        [int]$ContextLinesAfter = 2,
-        
-        [switch]$CaseSensitive = $false,
-        
-        [switch]$IncludeExtractedCabs = $true
+        [Parameter(Mandatory=$false)]
+        [scriptblock]$ProgressHandler = { param($percentComplete) }
     )
     
-    Write-Log -Message "Starting search in analysis results for: $SearchText" -Level INFO -Component "FileSearch"
-    
-    # Get all files to search
-    $filesToSearch = @()
-    
-    # Add files from the main analysis
-    $allFiles = Get-ChildItem -Path $AnalysisResults.SourcePath -Recurse -File
-    
-    foreach ($file in $allFiles) {
-        $extension = $file.Extension.ToLower()
-        
-        # Apply extension filters
-        if ($ExtensionsToInclude.Count -gt 0 -and $extension -notin $ExtensionsToInclude) {
-            continue
-        }
-        
-        if ($ExtensionsToExclude.Count -gt 0 -and $extension -in $ExtensionsToExclude) {
-            continue
-        }
-        
-        # Add to search list
-        $filesToSearch += $file.FullName
+    # Create results object
+    $searchResults = @{
+        SearchTerms = $SearchTerms
+        StartTime = Get-Date
+        FilesSearched = 0
+        FilesWithMatches = 0
+        FilesSkipped = 0
+        TotalMatches = 0
+        Results = @()
+        EndTime = $null
     }
     
-    # Also search in extracted CAB files if requested
-    if ($IncludeExtractedCabs) {
-        foreach ($cabFile in $AnalysisResults.CabFiles) {
-            if ($cabFile.Processed -and $cabFile.ExtractionSuccess -and $null -ne $cabFile.ExtractedPath) {
-                $extractedFiles = Get-ChildItem -Path $cabFile.ExtractedPath -Recurse -File
-                
-                foreach ($file in $extractedFiles) {
-                    $extension = $file.Extension.ToLower()
-                    
-                    # Apply extension filters
-                    if ($ExtensionsToInclude.Count -gt 0 -and $extension -notin $ExtensionsToInclude) {
-                        continue
-                    }
-                    
-                    if ($ExtensionsToExclude.Count -gt 0 -and $extension -in $ExtensionsToExclude) {
-                        continue
-                    }
-                    
-                    # Add to search list
-                    $filesToSearch += $file.FullName
+    try {
+        Write-DLALog -Message "Starting search with terms: $($SearchTerms -join ', ')" -Level INFO -Component "FileSearch"
+        
+        # Get all files from analysis results
+        $allFiles = $AnalysisResults.FileList
+        
+        # Filter by extension if specified
+        if ($PSBoundParameters.ContainsKey('FileExtensions') -and $FileExtensions.Count -gt 0) {
+            $allFiles = $allFiles | Where-Object {
+                $ext = [System.IO.Path]::GetExtension($_)
+                $FileExtensions -contains $ext
+            }
+            
+            Write-DLALog -Message "Filtered to $($allFiles.Count) files with extensions: $($FileExtensions -join ', ')" -Level INFO -Component "FileSearch"
+        }
+        
+        # Initialize progress
+        $totalFiles = $allFiles.Count
+        $filesProcessed = 0
+        
+        # Process each file
+        foreach ($file in $allFiles) {
+            $filesProcessed++
+            
+            # Update progress
+            $progressPercent = [Math]::Floor(($filesProcessed / $totalFiles) * 100)
+            & $ProgressHandler $progressPercent
+            
+            Write-DLALog -Message "Searching file $filesProcessed of $totalFiles : $file" -Level DEBUG -Component "FileSearch"
+            
+            # Search the file
+            $fileResults = Search-File -FilePath $file -SearchTerms $SearchTerms `
+                -CaseSensitive:$CaseSensitive -UseRegex:$UseRegex -MatchWholeWord:$MatchWholeWord `
+                -ContextLines $ContextLines -ProgressHandler { param($pc) }
+            
+            # Add to results
+            $searchResults.Results += $fileResults
+            $searchResults.FilesSearched++
+            
+            # Update counters
+            if ($fileResults.Skipped) {
+                $searchResults.FilesSkipped++
+            }
+            elseif ($fileResults.MatchCount -gt 0) {
+                $searchResults.FilesWithMatches++
+                $searchResults.TotalMatches += $fileResults.MatchCount
+            }
+        }
+        
+        # Finalize results
+        $searchResults.EndTime = Get-Date
+        $duration = $searchResults.EndTime - $searchResults.StartTime
+        
+        Write-DLALog -Message "Search completed in $($duration.TotalSeconds.ToString('0.00')) seconds. Found $($searchResults.TotalMatches) matches in $($searchResults.FilesWithMatches) files." -Level INFO -Component "FileSearch"
+        
+        return $searchResults
+    }
+    catch {
+        Write-DLALog -Message "Error during search: $($_.Exception.Message)" -Level ERROR -Component "FileSearch"
+        
+        # Complete results with error info
+        $searchResults.EndTime = Get-Date
+        $searchResults.Error = $_.Exception.Message
+        
+        return $searchResults
+    }
+}
+
+# Function to register a search report with the Reports tab
+function Register-SearchReport {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$ReportPath,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$SearchTerms
+    )
+    
+    try {
+        # Check if the form has a Reports registry
+        $form = [System.Windows.Forms.Form]::ActiveForm
+        
+        if ($form -and ($form | Get-Member -Name "RegisterReport" -MemberType ScriptMethod)) {
+            # Call the form's method to register the report
+            $form.RegisterReport(
+                [PSCustomObject]@{
+                    Type = "Search"
+                    Path = $ReportPath
+                    Name = "Search: $SearchTerms"
+                    CreatedDate = Get-Date
+                    Description = "Search results for terms: $SearchTerms"
                 }
+            )
+            
+            Write-DLALog -Message "Registered search report: $ReportPath" -Level INFO -Component "FileSearch"
+            return $true
+        }
+        
+        # Fall back to direct tab update if available
+        $tabControl = $form.Controls["MainTabControl"]
+        if ($tabControl) {
+            $reportsTab = $tabControl.TabPages["ReportsTab"]
+            if ($reportsTab -and ($reportsTab | Get-Member -Name "AddReport" -MemberType ScriptMethod)) {
+                $reportsTab.AddReport(
+                    [PSCustomObject]@{
+                        Type = "Search"
+                        Path = $ReportPath
+                        Name = "Search: $SearchTerms"
+                        CreatedDate = Get-Date
+                        Description = "Search results for terms: $SearchTerms"
+                    }
+                )
+                
+                Write-DLALog -Message "Added search report to Reports tab: $ReportPath" -Level INFO -Component "FileSearch"
+                return $true
+            }
+        }
+        
+        # Couldn't register
+        Write-DLALog -Message "No method available to register report with Reports tab" -Level WARNING -Component "FileSearch"
+        return $false
+    }
+    catch {
+        Write-DLALog -Message "Error registering search report: $($_.Exception.Message)" -Level ERROR -Component "FileSearch"
+        return $false
+    }
+}
+
+# Function to create an HTML search report
+function New-HtmlSearchReport {
+    param (
+        [Parameter(Mandatory=$true)]
+        $SearchResults,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$SearchTerms
+    )
+    
+    # Get current date/time
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    
+    # Start building HTML
+    $html = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>DiagLog Analyzer - Search Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1, h2, h3 { color: #2c3e50; }
+        .summary { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+        .file-section { margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 5px; }
+        .file-header { background-color: #f1f1f1; padding: 10px; margin-bottom: 15px; border-radius: 3px; }
+        .match { margin-bottom: 15px; border-left: 3px solid #3498db; padding-left: 10px; }
+        .match-line { background-color: #e8f4f8; padding: 5px; font-family: Consolas, monospace; white-space: pre-wrap; }
+        .context-line { font-family: Consolas, monospace; padding: 5px; white-space: pre-wrap; }
+        table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        .highlight { background-color: #ffeb3b; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>DiagLog Analyzer - Search Report</h1>
+    <p>Generated: $timestamp</p>
+    
+    <div class="summary">
+        <h2>Search Summary</h2>
+        <p><strong>Search Terms:</strong> $SearchTerms</p>
+        <p><strong>Total Files Searched:</strong> $($SearchResults.FilesSearched)</p>
+        <p><strong>Files With Matches:</strong> $($SearchResults.FilesWithMatches)</p>
+        <p><strong>Total Matches:</strong> $($SearchResults.TotalMatches)</p>
+        <p><strong>Files Skipped:</strong> $($SearchResults.FilesSkipped)</p>
+        <p><strong>Search Duration:</strong> $(($SearchResults.EndTime - $SearchResults.StartTime).TotalSeconds.ToString('0.00')) seconds</p>
+    </div>
+    
+    <h2>Matching Files</h2>
+    <table>
+        <tr>
+            <th>File</th>
+            <th>Matches</th>
+            <th>File Type</th>
+            <th>Size (KB)</th>
+            <th>Last Modified</th>
+        </tr>
+"@
+
+    # Add table rows for matching files
+    $matchingFiles = $SearchResults.Results | Where-Object { -not $_.Skipped -and $_.MatchCount -gt 0 } | Sort-Object -Property MatchCount -Descending
+    
+    foreach ($file in $matchingFiles) {
+        $fileName = Split-Path -Path $file.FilePath -Leaf
+        $fileSizeKB = [Math]::Round($file.FileSize / 1KB, 2)
+        $lastModified = $file.LastModified
+        
+        $html += @"
+        <tr>
+            <td>$([System.Web.HttpUtility]::HtmlEncode($fileName))</td>
+            <td>$($file.MatchCount)</td>
+            <td>$($file.FileType)</td>
+            <td>$fileSizeKB</td>
+            <td>$lastModified</td>
+        </tr>
+"@
+    }
+    
+    $html += @"
+    </table>
+    
+    <h2>Match Details</h2>
+"@
+
+    # Add detailed sections for each file
+    foreach ($file in $matchingFiles) {
+        $fileName = Split-Path -Path $file.FilePath -Leaf
+        $filePath = $file.FilePath
+        $fileSizeKB = [Math]::Round($file.FileSize / 1KB, 2)
+        
+        $html += @"
+    <div class="file-section">
+        <div class="file-header">
+            <h3>$([System.Web.HttpUtility]::HtmlEncode($fileName))</h3>
+            <p><strong>Path:</strong> $([System.Web.HttpUtility]::HtmlEncode($filePath))</p>
+            <p><strong>Matches:</strong> $($file.MatchCount) | <strong>File Type:</strong> $($file.FileType) | <strong>Size:</strong> $fileSizeKB KB</p>
+        </div>
+"@
+
+        # Add match details
+        if ($file.Matches -and $file.Matches.Count -gt 0) {
+            foreach ($match in $file.Matches) {
+                $html += @"
+        <div class="match">
+            <p><strong>Match at line $($match.LineNumber)</strong></p>
+"@
+
+                if ($match.Context -and $match.Context.Count -gt 0) {
+                    foreach ($line in $match.Context) {
+                        if ($line.LineNumber -eq $match.LineNumber) {
+                            # Highlight the matching line
+                            $html += "            <div class='match-line'>$([System.Web.HttpUtility]::HtmlEncode($line.Content))</div>`n"
+                        } else {
+                            $html += "            <div class='context-line'>$([System.Web.HttpUtility]::HtmlEncode($line.Content))</div>`n"
+                        }
+                    }
+                } else {
+                    # Just show the match line if no context
+                    $html += "            <div class='match-line'>$([System.Web.HttpUtility]::HtmlEncode($match.Line))</div>`n"
+                }
+
+                $html += "        </div>`n"
+            }
+        } else {
+            $html += "        <p>No detailed match information available.</p>`n"
+        }
+        
+        $html += "    </div>`n"
+    }
+    
+    # Close HTML
+    $html += @"
+</body>
+</html>
+"@
+
+    return $html
+}
+
+# Function to create a text search report
+function New-TextSearchReport {
+    param (
+        [Parameter(Mandatory=$true)]
+        $SearchResults,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$SearchTerms
+    )
+    
+    # Get current date/time
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    
+    # Start building text report
+    $text = @"
+DiagLog Analyzer - Search Report
+===============================
+Generated: $timestamp
+
+Search Summary
+-------------
+Search Terms: $SearchTerms
+Total Files Searched: $($SearchResults.FilesSearched)
+Files With Matches: $($SearchResults.FilesWithMatches)
+Total Matches: $($SearchResults.TotalMatches)
+Files Skipped: $($SearchResults.FilesSkipped)
+Search Duration: $(($SearchResults.EndTime - $SearchResults.StartTime).TotalSeconds.ToString('0.00')) seconds
+
+Matching Files
+-------------
+"@
+
+    # Add matching files summary
+    $matchingFiles = $SearchResults.Results | Where-Object { -not $_.Skipped -and $_.MatchCount -gt 0 } | Sort-Object -Property MatchCount -Descending
+    
+    foreach ($file in $matchingFiles) {
+        $fileName = Split-Path -Path $file.FilePath -Leaf
+        $fileSizeKB = [Math]::Round($file.FileSize / 1KB, 2)
+        
+        $text += @"
+File: $fileName
+Path: $($file.FilePath)
+Matches: $($file.MatchCount) | Type: $($file.FileType) | Size: $fileSizeKB KB | Modified: $($file.LastModified)
+
+"@
+    }
+    
+    $text += @"
+
+Match Details
+============
+
+"@
+
+    # Add detailed sections for each file
+    foreach ($file in $matchingFiles) {
+        $fileName = Split-Path -Path $file.FilePath -Leaf
+        
+        $text += @"
+FILE: $fileName
+===============================
+Path: $($file.FilePath)
+Matches: $($file.MatchCount)
+
+"@
+
+        # Add match details
+        if ($file.Matches -and $file.Matches.Count -gt 0) {
+            foreach ($match in $file.Matches) {
+                $text += @"
+Match at line $($match.LineNumber):
+-------------------------------
+
+"@
+
+                if ($match.Context -and $match.Context.Count -gt 0) {
+                    foreach ($line in $match.Context) {
+                        if ($line.LineNumber -eq $match.LineNumber) {
+                            # Mark the matching line
+                            $text += "> $($line.Content)`n"
+                        } else {
+                            $text += "  $($line.Content)`n"
+                        }
+                    }
+                } else {
+                    # Just show the match line if no context
+                    $text += "> $($match.Line)`n"
+                }
+
+                $text += "`n"
+            }
+        } else {
+            $text += "No detailed match information available.`n"
+        }
+        
+        $text += "`n-------------------------------`n`n"
+    }
+    
+    return $text
+}
+
+# Function to create a CSV search report
+function New-CsvSearchReport {
+    param (
+        [Parameter(Mandatory=$true)]
+        $SearchResults,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$OutputPath
+    )
+    
+    # Create directory if needed
+    $outputDir = Split-Path -Path $OutputPath -Parent
+    if (-not (Test-Path -Path $outputDir)) {
+        New-Item -Path $outputDir -ItemType Directory -Force | Out-Null
+    }
+    
+    # Create a summary report
+    $summaryPath = [System.IO.Path]::ChangeExtension($OutputPath, "summary.csv")
+    
+    $summary = [PSCustomObject]@{
+        SearchTerms = ($SearchResults.SearchTerms -join ", ")
+        StartTime = $SearchResults.StartTime
+        EndTime = $SearchResults.EndTime
+        DurationSeconds = ($SearchResults.EndTime - $SearchResults.StartTime).TotalSeconds
+        FilesSearched = $SearchResults.FilesSearched
+        FilesWithMatches = $SearchResults.FilesWithMatches
+        TotalMatches = $SearchResults.TotalMatches
+        FilesSkipped = $SearchResults.FilesSkipped
+    }
+    
+    $summary | Export-Csv -Path $summaryPath -NoTypeInformation
+    
+    # Create file matches report
+    $matchingFiles = $SearchResults.Results | Where-Object { -not $_.Skipped } | ForEach-Object {
+        [PSCustomObject]@{
+            FilePath = $_.FilePath
+            FileName = Split-Path -Path $_.FilePath -Leaf
+            MatchCount = $_.MatchCount
+            FileType = $_.FileType
+            FileSize = $_.FileSize
+            FileSizeKB = [Math]::Round($_.FileSize / 1KB, 2)
+            LastModified = $_.LastModified
+            Skipped = $_.Skipped
+            SkipReason = $_.SkipReason
+        }
+    }
+    
+    $matchingFiles | Export-Csv -Path $OutputPath -NoTypeInformation
+    
+    # Create detailed matches report for files with matches
+    $matchesPath = [System.IO.Path]::ChangeExtension($OutputPath, "details.csv")
+    
+    $matchDetails = @()
+    foreach ($file in ($SearchResults.Results | Where-Object { -not $_.Skipped -and $_.MatchCount -gt 0 })) {
+        $fileName = Split-Path -Path $file.FilePath -Leaf
+        
+        foreach ($match in $file.Matches) {
+            $matchDetails += [PSCustomObject]@{
+                FilePath = $file.FilePath
+                FileName = $fileName
+                LineNumber = $match.LineNumber
+                Line = $match.Line
+                FileType = $file.FileType
             }
         }
     }
     
-    Write-Log -Message "Prepared search list with $($filesToSearch.Count) files" -Level INFO -Component "FileSearch"
+    if ($matchDetails.Count -gt 0) {
+        $matchDetails | Export-Csv -Path $matchesPath -NoTypeInformation
+    }
     
-    # Execute search
-    $searchResults = Search-TextInFiles -FilePaths $filesToSearch -SearchText $SearchText `
-        -FileTypesToInclude $FileTypesToInclude -FileTypesToExclude $FileTypesToExclude `
-        -ContextLinesBefore $ContextLinesBefore -ContextLinesAfter $ContextLinesAfter `
-        -CaseSensitive:$CaseSensitive
-    
-    return $searchResults
+    return $true
 }
 
-# Function to highlight search text in a string
-function Format-SearchTextHighlight {
-    param (
-        [Parameter(Mandatory=$true)]
-        [string]$Text,
-        
-        [Parameter(Mandatory=$true)]
-        [string]$SearchText,
-        
-        [switch]$CaseSensitive = $false,
-        
-        [string]$HighlightPrefix = "<span class='highlight'>",
-        
-        [string]$HighlightSuffix = "</span>"
-    )
-    
-    if ([string]::IsNullOrEmpty($Text) -or [string]::IsNullOrEmpty($SearchText)) {
-        return $Text
-    }
-    
-    $comparisonType = if ($CaseSensitive) { [StringComparison]::Ordinal } else { [StringComparison]::OrdinalIgnoreCase }
-    $pattern = [regex]::Escape($SearchText)
-    
-    if ($CaseSensitive) {
-        return [regex]::Replace($Text, $pattern, "$HighlightPrefix`$&$HighlightSuffix")
-    }
-    else {
-        return [regex]::Replace($Text, $pattern, "$HighlightPrefix`$&$HighlightSuffix", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-    }
-}
+# Export the functions
+Export-ModuleMember -Function @(
+    'Search-AnalysisResults',
+    'Register-SearchReport',
+    'New-HtmlSearchReport',
+    'New-TextSearchReport',
+    'New-CsvSearchReport'
+)

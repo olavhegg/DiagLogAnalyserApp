@@ -1,79 +1,79 @@
-# DiagLog Analyzer - Main Launcher Script
-
-# Add required assemblies first
+# DiagLog Analyzer - Simple Launcher
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# Get the root path and ensure it's using Windows path format
-$script:RootPath = $PSScriptRoot
-if (-not $script:RootPath) {
-    $script:RootPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Get root path
+$rootPath = $PSScriptRoot
+if (-not $rootPath) {
+    $rootPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
-$script:RootPath = $script:RootPath.Replace('/', '\')
 
-# Create required directories if they don't exist
-$requiredPaths = @(
-    (Join-Path $script:RootPath "logs"),
-    (Join-Path $script:RootPath "results"),
-    (Join-Path $script:RootPath "temp")
-)
-
-foreach ($path in $requiredPaths) {
+# Ensure basic directories exist
+$requiredPaths = @("logs", "results", "temp")
+foreach ($dir in $requiredPaths) {
+    $path = Join-Path $rootPath $dir
     if (-not (Test-Path $path)) {
         New-Item -Path $path -ItemType Directory -Force | Out-Null
     }
 }
 
-# Module import order is important - define dependencies
-$moduleOrder = @(
-    "src\Config\Settings.psm1",        # Load first - no dependencies
-    "src\Utils\Logging.psm1",          # Depends on Settings
-    "src\Utils\FileSystem.psm1",       # Depends on Logging
-    "src\Core\FileSearch.psm1",        # Depends on FileSystem
-    "src\Core\CabExtractor.psm1",      # Depends on FileSystem
-    "src\Core\Analyzer.psm1",          # Depends on all above
-    "src\GUI\Controls.psm1",           # Depends on Settings
-    "src\GUI\MainForm.psm1"            # Depends on all above
+# Basic logging function for modules to use
+function Global:Write-DLALog {
+    param (
+        [string]$Message,
+        [string]$Level = "INFO",
+        [string]$Component = "General"
+    )
+    Write-Host "[$Level] [$Component] $Message"
+}
+
+# Basic setting function for modules to use
+function Global:Get-AppSetting {
+    param (
+        [string]$Name,
+        $DefaultValue = $null
+    )
+    return $DefaultValue
+}
+
+# Import essential modules
+$modules = @(
+    "src\Core\FileSearch.psm1",
+    "src\Core\Analyzer.psm1",
+    "src\GUI\Tabs\AnalysisTab.psm1",
+    "src\GUI\Tabs\SearchTab.psm1", 
+    "src\GUI\Tabs\ReportsTab.psm1",  # Added Reports Tab
+    "src\GUI\Tabs\SettingsTab.psm1", # Added Settings Tab
+    "src\GUI\Tabs\AboutTab.psm1",
+    "src\GUI\MainForm.psm1"
 )
 
-# Import modules in correct order
-foreach ($module in $moduleOrder) {
-    $modulePath = Join-Path -Path $script:RootPath -ChildPath $module
-    Write-Host "Attempting to load module: $modulePath"
-    
-    if (Test-Path $modulePath) {
-        try {
-            Import-Module $modulePath -Force -ErrorAction Stop
-            Write-Host "Successfully loaded module: $module" -ForegroundColor Green
-        }
-        catch {
-            Write-Error "Failed to load module $module : $_"
-            exit 1
-        }
+foreach ($module in $modules) {
+    $modulePath = Join-Path $rootPath $module
+    try {
+        Write-Host "Loading module: $modulePath"
+        Import-Module $modulePath -Force -ErrorAction Stop
     }
-    else {
-        Write-Error "Required module not found: $modulePath"
-        exit 1
+    catch {
+        Write-Host "Error loading module $module : $_" -ForegroundColor Red
+        [System.Windows.Forms.MessageBox]::Show("Error loading module $module : $_", "Error", 
+            [System.Windows.Forms.MessageBoxButtons]::OK, 
+            [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 }
 
-# Initialize settings and logging
+# Launch the application
 try {
-    Initialize-DLASettings
-    Initialize-DLALogging
-    Write-DLALog -Message "Starting DiagLog Analyzer" -Level INFO
-    
-    # Use Show-MainForm instead of direct form creation
-    Show-MainForm
+    Write-Host "Launching DiagLog Analyzer..." -ForegroundColor Green
+    if (Get-Command Show-MainForm -ErrorAction SilentlyContinue) {
+        Show-MainForm
+    } else {
+        throw "Show-MainForm function not found"
+    }
 }
 catch {
     $errorMsg = "Failed to start DiagLog Analyzer: $_"
-    if (Get-Command Write-DLALog -ErrorAction SilentlyContinue) {
-        Write-DLALog -Message $errorMsg -Level ERROR
-    }
-    else {
-        Write-Error $errorMsg
-    }
+    Write-Host $errorMsg -ForegroundColor Red
     [System.Windows.Forms.MessageBox]::Show($errorMsg, "Error", 
         [System.Windows.Forms.MessageBoxButtons]::OK, 
         [System.Windows.Forms.MessageBoxIcon]::Error)
